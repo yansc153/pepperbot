@@ -86,10 +86,11 @@ class TwitterBot:
     async def _start_headless(self) -> None:
         """VPS path: launch headless Chromium + load Twitter cookie file."""
         try:
-            from playwright_stealth import stealth_async
+            from playwright_stealth import Stealth
+            _stealth = Stealth()
         except ImportError:
             logger.warning("playwright-stealth not installed — bot detection risk higher")
-            stealth_async = None
+            _stealth = None
 
         self.browser = await self._playwright.chromium.launch(
             headless=True,
@@ -114,8 +115,8 @@ class TwitterBot:
             logger.warning("Cookie file not found: %s — will likely fail login check", _COOKIE_FILE)
 
         self.page = await context.new_page()
-        if stealth_async:
-            await stealth_async(self.page)
+        if _stealth:
+            await _stealth.apply_stealth_async(self.page)
 
         logger.info("Headless Chromium started")
 
@@ -179,19 +180,23 @@ class TwitterBot:
             pass
 
     async def is_logged_in(self) -> bool:
-        """Check if the connected Chrome is logged into X."""
+        """Check if the browser is logged into X."""
         if not self.page:
             return False
         try:
             url = self.page.url
             if "x.com" not in url and "twitter.com" not in url:
-                await self.page.goto(TWITTER_HOME, wait_until="networkidle", timeout=15000)
+                # Twitter has persistent WebSockets — use 'load' not 'networkidle'
+                await self.page.goto(TWITTER_HOME, wait_until="load", timeout=20000)
 
             if "/login" in self.page.url or "/i/flow/login" in self.page.url:
                 return False
 
-            el = await self.page.query_selector(self._selectors["tweet_input"])
-            return el is not None
+            # Wait up to 15s for the compose textarea (proves we're on home, logged in)
+            await self.page.wait_for_selector(
+                self._selectors["tweet_input"], timeout=15000
+            )
+            return True
         except Exception:
             return False
 
@@ -200,7 +205,7 @@ class TwitterBot:
         if not self.page:
             return False
         try:
-            await self.page.goto(TWITTER_HOME, wait_until="networkidle", timeout=15000)
+            await self.page.goto(TWITTER_HOME, wait_until="load", timeout=20000)
             return True
         except Exception as exc:
             logger.error("Failed to navigate home: %s", exc)

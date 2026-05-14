@@ -70,8 +70,8 @@ async def post_tweet(text: str, image_url: str | None) -> bool:
                     cookies = json.loads(_COOKIE_FILE.read_text(encoding="utf-8"))
                     await context.add_cookies(cookies)
                 try:
-                    from playwright_stealth import stealth_async as _stealth
-                    _apply_stealth = _stealth
+                    from playwright_stealth import Stealth
+                    _apply_stealth = Stealth()
                 except ImportError:
                     _apply_stealth = None
             else:
@@ -89,7 +89,7 @@ async def post_tweet(text: str, image_url: str | None) -> bool:
 
         page = await context.new_page()
         if _apply_stealth:
-            await _apply_stealth(page)
+            await _apply_stealth.apply_stealth_async(page)
 
         try:
             await page.goto(COMPOSE_URL, wait_until="domcontentloaded", timeout=30000)
