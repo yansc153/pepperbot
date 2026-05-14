@@ -1,0 +1,20 @@
+# Logs and runtime data
+logs/
+data/
+*.log
+
+# Playwright artifacts
+.playwright-mcp/
+
+# Temp files
+*.png
+__pycache__/
+*.pyc
+
+# Secrets (never commit)
+.env
+*.env
+secrets.env
+
+# macOS
+.DS_Store

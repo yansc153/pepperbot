@@ -1,0 +1,5 @@
+# PepperBot dependencies
+# No anthropic SDK needed — uses local `claude` CLI
+playwright>=1.44.0
+emoji>=2.12.0
+schedule>=1.2.0
