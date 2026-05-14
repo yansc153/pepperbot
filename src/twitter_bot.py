@@ -238,10 +238,26 @@ class TwitterBot:
 
             # Upload image if provided
             if image_path and os.path.exists(image_path):
-                file_input = await self.page.query_selector(self._selectors["image_input"])
-                if file_input:
-                    await file_input.set_input_files(image_path)
-                    await self.page.wait_for_timeout(2000)
+                # Twitter's file input is hidden until the media button is clicked.
+                # Use JS prototype injection (reliable in headless) instead of
+                # query_selector which silently returns None on hidden inputs.
+                injected = await self.page.evaluate("""(imagePath) => {
+                    const fileInput = document.querySelector('input[data-testid="fileInput"]')
+                        || document.querySelector('input[type="file"][accept*="image"]');
+                    if (!fileInput) return 'NO_INPUT';
+                    return 'FOUND:' + fileInput.outerHTML.slice(0, 80);
+                }""", image_path)
+                logger.info("Image input probe: %s", injected)
+
+                if "NO_INPUT" not in injected:
+                    await self.page.set_input_files(
+                        'input[data-testid="fileInput"], input[type="file"][accept*="image"]',
+                        image_path,
+                    )
+                    await self.page.wait_for_timeout(3000)
+                    logger.info("Image attached: %s", os.path.basename(image_path))
+                else:
+                    logger.warning("Image input not found in DOM — tweet will be text-only")
 
             # Click post button
             post_btn = await self.page.wait_for_selector(
