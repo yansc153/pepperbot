@@ -34,12 +34,13 @@ async def main() -> None:
     await bot.start()
 
     try:
-        # Get a real news item for image
-        logger.info("Fetching news item for og:image...")
+        # Get a real news item for image (pass bot so x.com URLs use authenticated screenshot)
+        logger.info("Fetching news item for image...")
         items = await scrape_aihot_items(since_hours=24, take=5)
         image_path = None
         for item in items:
-            image_path = await fetch_image_for_item(item)
+            logger.info("Trying image for: %s (%s)", item.title[:60], item.url[:60])
+            image_path = await fetch_image_for_item(item, bot=bot)
             if image_path:
                 logger.info("Got image: %s", image_path)
                 break

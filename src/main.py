@@ -197,7 +197,7 @@ async def _generate_and_publish_posts(
         # 7. Try to get image from source article
         image_path = None
         if matched_item:
-            image_path = await fetch_image_for_item(matched_item)
+            image_path = await fetch_image_for_item(matched_item, bot=bot)
             if image_path:
                 logger.info("Image acquired for post: %s", image_path)
 

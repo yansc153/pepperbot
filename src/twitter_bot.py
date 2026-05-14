@@ -28,6 +28,7 @@ from config import (
     TWITTER_URL,
     CHROME_CDP_URL,
     SCREENSHOT_DIR,
+    IMAGE_CACHE_DIR,
     PLAYWRIGHT_RULES_PATH,
     KOL_LIST_NAME,
 )
@@ -48,6 +49,7 @@ class TwitterBot:
     def __init__(self) -> None:
         self._playwright = None
         self.browser: Browser | None = None
+        self._context: BrowserContext | None = None
         self.page: Page | None = None
         self._selectors = self._load_known_selectors()
 
@@ -107,6 +109,7 @@ class TwitterBot:
             ),
             viewport={"width": 1280, "height": 720},
         )
+        self._context = context
         if _COOKIE_FILE.exists():
             cookies = json.loads(_COOKIE_FILE.read_text(encoding="utf-8"))
             await context.add_cookies(cookies)
@@ -129,6 +132,7 @@ class TwitterBot:
         if not contexts:
             raise RuntimeError("No browser contexts found. Is Chrome running?")
 
+        self._context = contexts[0]
         pages = contexts[0].pages
         twitter_page = None
         for p in pages:
@@ -143,6 +147,44 @@ class TwitterBot:
             self.page = await contexts[0].new_page()
             await self.page.goto(TWITTER_HOME, wait_until="load", timeout=15000)
             logger.info("Opened new X tab")
+
+    async def screenshot_tweet(self, tweet_url: str) -> str | None:
+        """
+        Open a background page in the same authenticated context, navigate to a
+        tweet permalink, screenshot the tweet card, and return the local file path.
+        Falls back to full-page screenshot if the tweet article element isn't found.
+        """
+        if not self._context:
+            logger.warning("screenshot_tweet: no browser context available")
+            return None
+
+        import hashlib
+        IMAGE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        url_hash = hashlib.md5(tweet_url.encode()).hexdigest()[:12]
+        output_path = IMAGE_CACHE_DIR / f"tweet_{url_hash}.jpg"
+
+        page = await self._context.new_page()
+        try:
+            await page.goto(tweet_url, wait_until="load", timeout=20000)
+            try:
+                tweet_el = await page.wait_for_selector(
+                    'article[data-testid="tweet"]', timeout=8000
+                )
+                await tweet_el.screenshot(path=str(output_path), type="jpeg", quality=85)
+            except Exception:
+                await page.screenshot(path=str(output_path), type="jpeg", full_page=False)
+
+            if output_path.exists() and output_path.stat().st_size > 2048:
+                logger.info("Tweet screenshot saved: %s (%d KB)", output_path.name, output_path.stat().st_size // 1024)
+                return str(output_path)
+            output_path.unlink(missing_ok=True)
+            return None
+        except Exception as exc:
+            logger.warning("screenshot_tweet failed for %s: %s", tweet_url[:80], exc)
+            output_path.unlink(missing_ok=True)
+            return None
+        finally:
+            await page.close()
 
     async def stop(self) -> None:
         """Disconnect from Chrome (doesn't close the browser)."""

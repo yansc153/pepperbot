@@ -214,22 +214,33 @@ async def download_image(image_url: str, filename: str = "") -> str | None:
         return None
 
 
-async def fetch_image_for_item(item: "ScrapedItem") -> str | None:
+async def fetch_image_for_item(item: "ScrapedItem", bot=None) -> str | None:
     """
     Try to get an image for a scraped news item:
-    1. If item already has image_url, download it directly
-    2. Otherwise, fetch og:image from the source article
+    1. If item already has image_url, download it directly.
+    2. For x.com URLs: use bot.screenshot_tweet() (requires authenticated session).
+    3. For other URLs: fetch og:image via curl.
     Returns local file path or None.
     """
-    image_url = item.image_url
+    if item.image_url:
+        return await download_image(item.image_url)
 
-    if not image_url and item.url:
+    if not item.url:
+        return None
+
+    is_twitter = "x.com" in item.url or "twitter.com" in item.url
+
+    if is_twitter and bot is not None:
+        path = await bot.screenshot_tweet(item.url)
+        if path:
+            return path
+        return None  # curl won't work for x.com — skip
+
+    if not is_twitter:
         image_url = await fetch_og_image(item.url)
         if image_url:
             item.image_url = image_url
-
-    if image_url:
-        return await download_image(image_url)
+            return await download_image(image_url)
 
     return None
 
