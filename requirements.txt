@@ -1,6 +1,5 @@
 # PepperBot dependencies
 # Mac: claude CLI backend (default). VPS: set LLM_BACKEND=moonshot
 playwright>=1.44.0
-playwright-stealth>=1.0.6
+playwright-stealth>=2.0.0
 emoji>=2.12.0
-schedule>=1.2.0

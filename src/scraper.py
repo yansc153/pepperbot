@@ -345,7 +345,7 @@ async def scrape_github_trending() -> list[ScrapedItem]:
             return []
 
         page = await context.new_page()
-        await page.goto(GITHUB_TRENDING_URL, wait_until="networkidle", timeout=15000)
+        await page.goto(GITHUB_TRENDING_URL, wait_until="load", timeout=15000)
 
         repos = await page.query_selector_all("article.Box-row")
         for repo in repos[:20]:

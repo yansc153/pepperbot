@@ -141,7 +141,7 @@ class TwitterBot:
             logger.info("Found existing X tab: %s", self.page.url)
         else:
             self.page = await contexts[0].new_page()
-            await self.page.goto(TWITTER_HOME, wait_until="networkidle", timeout=15000)
+            await self.page.goto(TWITTER_HOME, wait_until="load", timeout=15000)
             logger.info("Opened new X tab")
 
     async def stop(self) -> None:
@@ -280,7 +280,7 @@ class TwitterBot:
         try:
             await self.page.goto(
                 f"{TWITTER_URL}/pepperfr1ends",
-                wait_until="networkidle", timeout=15000,
+                wait_until="load", timeout=15000,
             )
             await self.page.wait_for_selector('[data-testid="tweet"]', timeout=10000)
 
@@ -306,7 +306,7 @@ class TwitterBot:
             return False
 
         try:
-            await self.page.goto(post_url, wait_until="networkidle", timeout=15000)
+            await self.page.goto(post_url, wait_until="load", timeout=15000)
             await self.page.wait_for_timeout(1500)
 
             # On tweet detail page, reply box is below the tweet.
@@ -348,7 +348,7 @@ class TwitterBot:
         if not self.page:
             return False
         try:
-            await self.page.goto(post_url, wait_until="networkidle", timeout=15000)
+            await self.page.goto(post_url, wait_until="load", timeout=15000)
 
             # Check if already liked (unlike button present = already liked)
             unlike_btn = await self.page.query_selector(self._selectors["unlike_button"])
@@ -374,7 +374,7 @@ class TwitterBot:
             return False
         try:
             profile_url = f"{TWITTER_URL}/{handle.lstrip('@')}"
-            await self.page.goto(profile_url, wait_until="networkidle", timeout=15000)
+            await self.page.goto(profile_url, wait_until="load", timeout=15000)
 
             # Check if already following (button text = "Following" / "正在关注")
             follow_btns = await self.page.query_selector_all('[role="button"]')
@@ -398,7 +398,7 @@ class TwitterBot:
         if not self.page:
             return {}
         try:
-            await self.page.goto(post_url, wait_until="networkidle", timeout=15000)
+            await self.page.goto(post_url, wait_until="load", timeout=15000)
 
             metrics = {"likes": 0, "retweets": 0, "replies": 0, "impressions": 0}
 
@@ -428,7 +428,7 @@ class TwitterBot:
         try:
             await self.page.goto(
                 f"{TWITTER_URL}/pepperfr1ends",
-                wait_until="networkidle", timeout=15000,
+                wait_until="load", timeout=15000,
             )
             followers_link = await self.page.query_selector('a[href$="/verified_followers"]')
             if not followers_link:
@@ -480,7 +480,7 @@ class TwitterBot:
             profile_url = f"{TWITTER_URL}/{handle}"
 
             try:
-                await self.page.goto(profile_url, wait_until="networkidle", timeout=20000)
+                await self.page.goto(profile_url, wait_until="load", timeout=20000)
                 await self.page.wait_for_selector('[data-testid="tweet"]', timeout=10000)
 
                 tweet_elements = await self.page.query_selector_all('[data-testid="tweet"]')
@@ -539,7 +539,7 @@ class TwitterBot:
         if not self.page:
             return False
         try:
-            await self.page.goto(f"{TWITTER_URL}/i/lists", wait_until="networkidle", timeout=15000)
+            await self.page.goto(f"{TWITTER_URL}/i/lists", wait_until="load", timeout=15000)
             await self.page.wait_for_timeout(1500)
 
             # Check if list already exists
@@ -603,7 +603,7 @@ class TwitterBot:
         try:
             clean_handle = handle.lstrip("@")
             profile_url = f"{TWITTER_URL}/{clean_handle}"
-            await self.page.goto(profile_url, wait_until="networkidle", timeout=15000)
+            await self.page.goto(profile_url, wait_until="load", timeout=15000)
             await self.page.wait_for_timeout(1000)
 
             # Click the "..." more button on profile
@@ -664,7 +664,7 @@ class TwitterBot:
         posts = []
         try:
             # Navigate to Lists page to find our list
-            await self.page.goto(f"{TWITTER_URL}/i/lists", wait_until="networkidle", timeout=15000)
+            await self.page.goto(f"{TWITTER_URL}/i/lists", wait_until="load", timeout=15000)
             await self.page.wait_for_timeout(1500)
 
             # Find and click our list
@@ -757,7 +757,7 @@ class TwitterBot:
 
         posts = []
         try:
-            await self.page.goto(list_url, wait_until="networkidle", timeout=20000)
+            await self.page.goto(list_url, wait_until="load", timeout=20000)
             await self.page.wait_for_selector('[data-testid="tweet"]', timeout=10000)
 
             tweet_elements = await self.page.query_selector_all('[data-testid="tweet"]')
