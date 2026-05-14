@@ -12,6 +12,7 @@ All screenshots deleted after use. Known selectors cached.
 """
 
 import asyncio
+import json
 import logging
 import os
 import random
@@ -30,6 +31,13 @@ from config import (
     PLAYWRIGHT_RULES_PATH,
     KOL_LIST_NAME,
 )
+
+# VPS headless mode: set HEADLESS=true to launch Chromium without CDP
+HEADLESS = os.environ.get("HEADLESS", "false").lower() == "true"
+_COOKIE_FILE = Path(os.environ.get(
+    "TWITTER_COOKIE_FILE",
+    str(Path(__file__).resolve().parent.parent / "secrets" / "twitter_cookies.json"),
+))
 
 logger = logging.getLogger(__name__)
 
@@ -60,41 +68,80 @@ class TwitterBot:
         }
 
     async def start(self) -> None:
-        """Connect to existing Chrome via CDP. Chrome must be running with --remote-debugging-port=9222."""
+        """
+        Start browser connection. Two modes:
+          HEADLESS=false (default): connect to existing Chrome via CDP (Mac, Chrome must be running)
+          HEADLESS=true: launch headless Chromium with twitter_cookies.json (VPS)
+        """
         self._playwright = await async_playwright().start()
         try:
-            self.browser = await self._playwright.chromium.connect_over_cdp(CHROME_CDP_URL)
-            logger.info("Connected to Chrome via CDP at %s", CHROME_CDP_URL)
-
-            # Get existing contexts and pages
-            contexts = self.browser.contexts
-            if contexts:
-                pages = contexts[0].pages
-                # Try to find an existing Twitter/X tab
-                twitter_page = None
-                for p in pages:
-                    if "x.com" in p.url or "twitter.com" in p.url:
-                        twitter_page = p
-                        break
-
-                if twitter_page:
-                    self.page = twitter_page
-                    logger.info("Found existing X tab: %s", self.page.url)
-                else:
-                    # Open new tab to Twitter
-                    self.page = await contexts[0].new_page()
-                    await self.page.goto(TWITTER_HOME, wait_until="networkidle", timeout=15000)
-                    logger.info("Opened new X tab")
+            if HEADLESS:
+                await self._start_headless()
             else:
-                raise RuntimeError("No browser contexts found. Is Chrome running?")
-
+                await self._start_cdp()
         except Exception as exc:
-            logger.error(
-                "Failed to connect to Chrome. Make sure Chrome is running with:\n"
-                "  open -a 'Google Chrome' --args --remote-debugging-port=9222\n"
-                "Error: %s", exc
-            )
+            logger.error("Browser start failed: %s", exc)
             raise
+
+    async def _start_headless(self) -> None:
+        """VPS path: launch headless Chromium + load Twitter cookie file."""
+        try:
+            from playwright_stealth import stealth_async
+        except ImportError:
+            logger.warning("playwright-stealth not installed — bot detection risk higher")
+            stealth_async = None
+
+        self.browser = await self._playwright.chromium.launch(
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-blink-features=AutomationControlled",
+            ],
+        )
+        context = await self.browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            ),
+            viewport={"width": 1280, "height": 720},
+        )
+        if _COOKIE_FILE.exists():
+            cookies = json.loads(_COOKIE_FILE.read_text(encoding="utf-8"))
+            await context.add_cookies(cookies)
+            logger.info("Loaded %d cookies from %s", len(cookies), _COOKIE_FILE)
+        else:
+            logger.warning("Cookie file not found: %s — will likely fail login check", _COOKIE_FILE)
+
+        self.page = await context.new_page()
+        if stealth_async:
+            await stealth_async(self.page)
+
+        logger.info("Headless Chromium started")
+
+    async def _start_cdp(self) -> None:
+        """Mac path: connect to existing Chrome via CDP."""
+        self.browser = await self._playwright.chromium.connect_over_cdp(CHROME_CDP_URL)
+        logger.info("Connected to Chrome via CDP at %s", CHROME_CDP_URL)
+
+        contexts = self.browser.contexts
+        if not contexts:
+            raise RuntimeError("No browser contexts found. Is Chrome running?")
+
+        pages = contexts[0].pages
+        twitter_page = None
+        for p in pages:
+            if "x.com" in p.url or "twitter.com" in p.url:
+                twitter_page = p
+                break
+
+        if twitter_page:
+            self.page = twitter_page
+            logger.info("Found existing X tab: %s", self.page.url)
+        else:
+            self.page = await contexts[0].new_page()
+            await self.page.goto(TWITTER_HOME, wait_until="networkidle", timeout=15000)
+            logger.info("Opened new X tab")
 
     async def stop(self) -> None:
         """Disconnect from Chrome (doesn't close the browser)."""
@@ -772,8 +819,6 @@ class TwitterBot:
             success = await self.follow_user(handle)
             if success:
                 followed += 1
-            # Rate limit: wait between follows
-            import asyncio
             await asyncio.sleep(random.uniform(3, 8))
         logger.info("Batch follow: %d/%d succeeded", followed, len(handles))
         return followed

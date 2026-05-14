@@ -1,17 +1,57 @@
 """
-Local Claude CLI wrapper. All LLM calls go through here.
-Calls `claude` command-line tool via async subprocess — no API key needed.
-LLM only does two things: scoring and writing. No routing, no scheduling.
+LLM wrapper. Supports two backends:
+  claude  (default) — local claude CLI via async subprocess, no API key needed
+  moonshot          — Moonshot API via urllib, set LLM_BACKEND=moonshot in env
+
+Set LLM_BACKEND=moonshot on VPS where claude CLI is unavailable.
 """
 
 import asyncio
 import json
 import logging
+import os
+import urllib.request
+import urllib.error
 from typing import Any
 
 from config import CLAUDE_CLI_PATH, CLAUDE_MODEL, CLAUDE_MAX_TOKENS
 
 logger = logging.getLogger(__name__)
+
+LLM_BACKEND = os.environ.get("LLM_BACKEND", "claude")  # "claude" | "moonshot"
+_MOONSHOT_API_KEY = os.environ.get("MOONSHOT_API_KEY", "")
+_MOONSHOT_URL = "https://api.moonshot.cn/v1/chat/completions"
+_MOONSHOT_MODEL = "moonshot-v1-8k"
+
+
+def _moonshot_request(system: str, user: str, max_tokens: int, temperature: float) -> str:
+    """Synchronous Moonshot API call — run via asyncio.to_thread()."""
+    if not _MOONSHOT_API_KEY:
+        raise RuntimeError("MOONSHOT_API_KEY not set — cannot use moonshot backend")
+    payload = json.dumps({
+        "model": _MOONSHOT_MODEL,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        _MOONSHOT_URL,
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {_MOONSHOT_API_KEY}",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = json.loads(resp.read())
+        return data["choices"][0]["message"]["content"].strip()
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Moonshot API HTTP {exc.code}: {body}") from exc
 
 
 async def call_claude(
@@ -21,10 +61,22 @@ async def call_claude(
     temperature: float = 0.7,
 ) -> str:
     """
-    Call local Claude CLI asynchronously. Returns the text response.
-    Uses: claude -p "prompt" --model sonnet --output-format text
-    System prompt is passed via --system-prompt flag.
+    Call LLM asynchronously. Routes to Moonshot or local Claude CLI based on LLM_BACKEND.
+    Returns the text response.
     """
+    if LLM_BACKEND == "moonshot":
+        return await asyncio.to_thread(
+            _moonshot_request, system_prompt, user_prompt, max_tokens, temperature
+        )
+    return await _call_claude_cli(system_prompt, user_prompt, max_tokens)
+
+
+async def _call_claude_cli(
+    system_prompt: str,
+    user_prompt: str,
+    max_tokens: int,
+) -> str:
+    """Call local Claude CLI via async subprocess."""
     cmd = [
         CLAUDE_CLI_PATH,
         "-p", user_prompt,

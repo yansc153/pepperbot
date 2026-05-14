@@ -10,6 +10,7 @@ Usage:
 
 import argparse
 import asyncio
+import json
 import os
 import sys
 import tempfile
@@ -19,8 +20,13 @@ from pathlib import Path
 from playwright.async_api import async_playwright
 from tweet_utils import tweet_weight, MAX_TWEET_WEIGHT
 
-CHROME_CDP = "http://localhost:9222"
+CHROME_CDP = os.environ.get("CHROME_CDP_URL", "http://localhost:9222")
 COMPOSE_URL = "https://x.com/compose/post"
+HEADLESS = os.environ.get("HEADLESS", "false").lower() == "true"
+_COOKIE_FILE = Path(os.environ.get(
+    "TWITTER_COOKIE_FILE",
+    str(Path(__file__).resolve().parent.parent / "secrets" / "twitter_cookies.json"),
+))
 
 
 async def download_image(url: str, dest_path: str) -> bool:
@@ -47,14 +53,43 @@ async def download_image(url: str, dest_path: str) -> bool:
 async def post_tweet(text: str, image_url: str | None) -> bool:
     async with async_playwright() as p:
         try:
-            browser = await p.chromium.connect_over_cdp(CHROME_CDP)
+            if HEADLESS:
+                browser = await p.chromium.launch(
+                    headless=True,
+                    args=["--no-sandbox", "--disable-dev-shm-usage",
+                          "--disable-blink-features=AutomationControlled"],
+                )
+                context = await browser.new_context(
+                    user_agent=(
+                        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+                    ),
+                    viewport={"width": 1280, "height": 720},
+                )
+                if _COOKIE_FILE.exists():
+                    cookies = json.loads(_COOKIE_FILE.read_text(encoding="utf-8"))
+                    await context.add_cookies(cookies)
+                try:
+                    from playwright_stealth import stealth_async as _stealth
+                    _apply_stealth = _stealth
+                except ImportError:
+                    _apply_stealth = None
+            else:
+                try:
+                    browser = await p.chromium.connect_over_cdp(CHROME_CDP)
+                except Exception as e:
+                    print(f"[ERROR] Cannot connect to Chrome at {CHROME_CDP}: {e}", file=sys.stderr)
+                    print("[ERROR] Start Chrome with: open -a 'Google Chrome' --args --remote-debugging-port=9222", file=sys.stderr)
+                    return False
+                context = browser.contexts[0]
+                _apply_stealth = None
         except Exception as e:
-            print(f"[ERROR] Cannot connect to Chrome at {CHROME_CDP}: {e}", file=sys.stderr)
-            print("[ERROR] Start Chrome with: open -a 'Google Chrome' --args --remote-debugging-port=9222", file=sys.stderr)
+            print(f"[ERROR] Browser setup failed: {e}", file=sys.stderr)
             return False
 
-        context = browser.contexts[0]
         page = await context.new_page()
+        if _apply_stealth:
+            await _apply_stealth(page)
 
         try:
             await page.goto(COMPOSE_URL, wait_until="domcontentloaded", timeout=30000)

@@ -106,7 +106,6 @@ def call_api(messages: list[dict], temperature: float = 0.85) -> str:
     if not API_KEY:
         print("[ERROR] MOONSHOT_API_KEY not set", file=sys.stderr)
         sys.exit(1)
-    ssl_ctx = ssl.create_default_context()
     payload = {
         "model": MODEL,
         "messages": messages,
