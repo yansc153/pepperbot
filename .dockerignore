@@ -1,0 +1,12 @@
+secrets/
+data/
+logs/
+tmp_images/
+__pycache__/
+*.pyc
+*.log
+.DS_Store
+.git
+.claude
+*.png
+*.jpg

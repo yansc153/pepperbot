@@ -1,0 +1,17 @@
+services:
+  pepperbot:
+    build: .
+    image: pepperbot:latest
+    restart: unless-stopped
+    environment:
+      - HEADLESS=true
+      - LLM_BACKEND=moonshot
+      - TWITTER_COOKIE_FILE=/app/secrets/twitter_cookies.json
+    env_file:
+      - ./secrets/secrets.env
+    volumes:
+      - ./secrets:/app/secrets:ro
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./tmp_images:/app/tmp_images
+    shm_size: 256mb
