@@ -310,15 +310,17 @@ class TwitterBot:
                 return None
 
             await post_btn.click()
-            await self.page.wait_for_timeout(3000)
             logger.info("Tweet posted: %s...", text[:50])
 
-            # Extract tweet URL from the page after posting
-            tweet_url = await self._extract_latest_tweet_url()
+            # Capture the unique tweet URL from the confirmation toast.
+            # The toast contains a View link with the exact /status/<id> for
+            # THIS post — unlike profile navigation which caches the same first
+            # tweet across rapid consecutive posts.
+            tweet_url = await self._capture_tweet_url_from_toast()
             if tweet_url:
                 logger.info("Tweet URL: %s", tweet_url)
             else:
-                logger.warning("Could not extract tweet URL, using profile fallback")
+                logger.warning("Toast capture failed — tweet posted but URL unknown")
                 tweet_url = f"{TWITTER_URL}/pepperfr1ends"
 
             return tweet_url
@@ -329,34 +331,26 @@ class TwitterBot:
             self._cleanup(shot)
             return None
 
-    async def _extract_latest_tweet_url(self) -> str | None:
+    async def _capture_tweet_url_from_toast(self) -> str | None:
         """
-        After posting, navigate to profile and grab the latest tweet's URL.
-        Twitter redirects or shows a toast, but the most reliable method is
-        checking our own profile for the newest tweet.
+        Wait for Twitter's post-confirmation toast and extract the /status/ URL.
+        The toast appears at the bottom of the home page after a successful post
+        and contains a View link pointing to the exact tweet that was just created.
+        This is reliable even for rapid consecutive posts because each post gets
+        its own toast with its own unique status ID.
         """
         try:
-            await self.page.goto(
-                f"{TWITTER_URL}/pepperfr1ends",
-                wait_until="load", timeout=15000,
+            toast = await self.page.wait_for_selector(
+                '[data-testid="toast"]', timeout=8000
             )
-            await self.page.wait_for_selector('[data-testid="tweet"]', timeout=10000)
-
-            # Get the first (newest) tweet
-            first_tweet = await self.page.query_selector('[data-testid="tweet"]')
-            if not first_tweet:
-                return None
-
-            time_el = await first_tweet.query_selector("time")
-            if time_el:
-                parent_a = await time_el.evaluate("el => el.closest('a')?.href")
-                if parent_a and "status" in str(parent_a):
-                    return str(parent_a)
-
-            return None
+            view_link = await toast.query_selector('a[href*="/status/"]')
+            if view_link:
+                href = await view_link.get_attribute("href")
+                if href:
+                    return f"https://x.com{href}" if href.startswith("/") else href
         except Exception as exc:
-            logger.warning("Failed to extract tweet URL: %s", exc)
-            return None
+            logger.warning("Tweet URL toast capture failed: %s", exc)
+        return None
 
     async def post_comment(self, post_url: str, comment_text: str) -> bool:
         """Comment on a specific tweet."""
