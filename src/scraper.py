@@ -21,8 +21,6 @@ from config import (
     AIHOT_MAX_ITEMS,
     AIHOT_LOOKBACK_HOURS,
     AIHOT_CATEGORY_MAP,
-    GITHUB_TRENDING_URL,
-    CHROME_CDP_URL,
     IMAGE_CACHE_DIR,
     MAX_IMAGE_SIZE_MB,
 )
@@ -341,97 +339,13 @@ async def scrape_aihot_by_keyword(keyword: str, take: int = 20) -> list[ScrapedI
     return items
 
 
-# ── GitHub Trending (supplementary) ──
-
-async def scrape_github_trending() -> list[ScrapedItem]:
-    """Scrape GitHub trending repos via connected Chrome CDP."""
-    items = []
-    try:
-        from playwright.async_api import async_playwright
-        pw = await async_playwright().start()
-        browser = await pw.chromium.connect_over_cdp(CHROME_CDP_URL)
-        context = browser.contexts[0] if browser.contexts else None
-        if not context:
-            await pw.stop()
-            return []
-
-        page = await context.new_page()
-        await page.goto(GITHUB_TRENDING_URL, wait_until="load", timeout=15000)
-
-        repos = await page.query_selector_all("article.Box-row")
-        for repo in repos[:20]:
-            name_el = await repo.query_selector("h2 a")
-            desc_el = await repo.query_selector("p")
-            lang_el = await repo.query_selector('[itemprop="programmingLanguage"]')
-            stars_el = await repo.query_selector('a[href*="/stargazers"]')
-
-            if name_el:
-                name = (await name_el.inner_text()).strip().replace("\n", "").replace(" ", "")
-                href = await name_el.get_attribute("href") or ""
-                desc = (await desc_el.inner_text()).strip() if desc_el else ""
-                lang = (await lang_el.inner_text()).strip() if lang_el else ""
-
-                # Filter for AI-related repos
-                ai_keywords = [
-                    "ai", "llm", "gpt", "claude", "agent", "model",
-                    "neural", "transformer", "machine-learning", "ml",
-                    "anthropic", "openai", "inference", "fine-tun",
-                    "rag", "embedding", "diffusion", "lora",
-                ]
-                combined = f"{name} {desc}".lower()
-                if any(kw in combined for kw in ai_keywords):
-                    items.append(ScrapedItem(
-                        title=name,
-                        url=f"https://github.com{href}",
-                        source="github_trending",
-                        snippet=desc,
-                        content_type="ai_tool_review",
-                    ))
-
-        await page.close()
-        await browser.close()
-        await pw.stop()
-
-    except Exception as exc:
-        logger.error("GitHub trending scrape failed: %s", exc)
-
-    logger.info("GitHub Trending: %d AI-related repos", len(items))
-    return items
-
-
 # ── Aggregator ──
 
 async def scrape_all_news() -> list[ScrapedItem]:
-    """
-    Aggregate news from all sources.
-    Primary: AI HOT API (curated, structured, with summaries).
-    Supplementary: GitHub Trending (AI-filtered).
-    """
-    all_items: list[ScrapedItem] = []
-
-    # Primary: AI HOT curated items (last 24h)
-    aihot_items = await scrape_aihot_items()
-    all_items.extend(aihot_items)
-
-    # Supplementary: GitHub Trending
-    gh_items = await scrape_github_trending()
-    all_items.extend(gh_items)
-
-    # Deduplicate by URL
-    seen_urls: set[str] = set()
-    unique_items: list[ScrapedItem] = []
-    for item in all_items:
-        if item.url and item.url not in seen_urls:
-            seen_urls.add(item.url)
-            unique_items.append(item)
-        elif not item.url:
-            unique_items.append(item)
-
-    logger.info(
-        "Total scraped: %d items (%d AI HOT + %d GitHub, %d after dedup)",
-        len(all_items), len(aihot_items), len(gh_items), len(unique_items),
-    )
-    return unique_items
+    """Fetch curated AI news from AI HOT API (sole source)."""
+    items = await scrape_aihot_items()
+    logger.info("Total scraped: %d AI HOT items", len(items))
+    return items
 
 
 def dict_to_kol_post(d: dict) -> KOLPost:
