@@ -53,6 +53,8 @@ RUN echo '0 23 * * * root /app/scripts/run_slot_vps.sh slot1 >> /app/logs/slot1.
 0 16 * * * root /app/scripts/run_slot_vps.sh review >> /app/logs/review.log 2>&1' \
     > /etc/cron.d/pepperbot && chmod 0644 /etc/cron.d/pepperbot
 
-RUN mkdir -p /app/logs /app/data /app/tmp_images
+RUN mkdir -p /app/logs /app/data /app/tmp_images /app/tmp_screenshots
 
-CMD ["cron", "-f"]
+RUN chmod +x /app/scripts/entrypoint.sh /app/scripts/run_slot_vps.sh
+
+CMD ["/app/scripts/entrypoint.sh"]

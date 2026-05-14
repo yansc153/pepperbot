@@ -8,7 +8,7 @@ Usage:
 
 Slot → session mapping (CST):
   slot1  → morning  (07:00)
-  slot2  → noon     (12:00)
+  slot2  → noon     (11:00)
   slot3  → evening  (16:00)
   slot4  → evening  (20:00)
   slot5  → evening  (23:00)

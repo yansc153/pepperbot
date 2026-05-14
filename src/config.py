@@ -133,9 +133,6 @@ MAX_IMAGE_SIZE_MB = 5  # skip images larger than this
 KOL_LIST_NAME = "AI-KOL-Monitor"  # private list name
 KOL_LIST_URL = "https://x.com/i/lists/2034170120671793445"  # 实际 KOL 监控列表
 
-# ── Supplementary sources ──
-GITHUB_TRENDING_URL = "https://github.com/trending?since=daily"
-
 # ── KOL tiers ──
 @dataclass
 class KOLTier:
