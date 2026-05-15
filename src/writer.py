@@ -154,8 +154,9 @@ async def write_tweet(
                 logger.warning("Empty tweet from LLM, attempt %d", attempt + 1)
                 continue
 
-            # Strip trailing 。 from each line — Moonshot habitually adds them
+            # Deterministic formatting fixes — Moonshot ignores these prompt rules reliably
             tweet_text = "\n".join(line.rstrip("。") for line in tweet_text.split("\n"))
+            tweet_text = tweet_text.replace("，", " ")
             result["tweet"] = tweet_text
 
             # Run guardrails
