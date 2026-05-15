@@ -154,6 +154,10 @@ async def write_tweet(
                 logger.warning("Empty tweet from LLM, attempt %d", attempt + 1)
                 continue
 
+            # Strip trailing 。 from each line — Moonshot habitually adds them
+            tweet_text = "\n".join(line.rstrip("。") for line in tweet_text.split("\n"))
+            result["tweet"] = tweet_text
+
             # Run guardrails
             failures = run_all_guardrails(tweet_text)
 
