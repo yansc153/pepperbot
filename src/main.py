@@ -194,12 +194,21 @@ async def _generate_and_publish_posts(
             logger.error("Kill violation in final check, discarding")
             continue
 
-        # 7. Try to get image from source article
+        # 7. Get image from source article — CLAUDE.md 硬规则:无图不发
+        # X 算法 v2: 标签缺失 = MediumRisk = 隐性降权
+        # 详见 voice/x_algo_v2.md
         image_path = None
         if matched_item:
             image_path = await fetch_image_for_item(matched_item, bot=bot)
             if image_path:
                 logger.info("Image acquired for post: %s", image_path)
+
+        if not image_path:
+            logger.warning(
+                "No image for tweet (item=%s) — skipping per 'no image, no post' rule",
+                getattr(matched_item, "url", "n/a")[:80] if matched_item else "no_item",
+            )
+            continue
 
         # 8. Insert to database
         post_id = insert_post(
