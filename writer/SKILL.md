@@ -17,9 +17,10 @@
 2. `config/persona.md` — 人设定义
 3. `voice/voice_profile.md` — 5 do / 5 don't
 4. `voice/avoid_slop.md` — 反 AI 腔规则
-5. 当前 brief（素材/选题）
-6. `templates/template_ai.md` — 内容模板
-7. `templates/hooks_ai.md` — 钩子库
+5. `voice/x_algo_v2.md` — X 算法 v2 心法（slop_score / 首句钩子 / 圈层规则）
+6. 当前 brief（素材/选题）
+7. `templates/template_ai.md` — 内容模板
+8. `templates/hooks_ai.md` — 钩子库
 
 ---
 
@@ -92,3 +93,12 @@
 5. 不超 280 字
 6. 不复读官方文案：必须有花椒立场
 7. 每条必须有配图方案
+8. **首句必须满足三选一**（X 算法 v2 not_dwelled 防御）：
+   - (a) 具体观察：「Anthropic 今天悄悄改了定价」
+   - (b) 反共识：「我不认为 Sora 2 是视频模型」
+   - (c) 数据/事实：「Anthropic 估值 9000 亿，3 个月翻 2.4 倍」
+   禁止：「最近…」「今天…」「关于 X 想说…」「不知道大家…」「让我们聊聊…」
+9. **slop 高风险禁忌**（X 算法 v2 slop_score 防御）：
+   - 禁通用过渡词连用：一条用 ≥ 2 个「其实呢/说白了/归根结底/总的来说」= 重写
+   - 禁万能问句结尾：「你们怎么看？」「欢迎讨论」= 重写
+   - 同选题 48 小时内不重发（哪怕换说法）

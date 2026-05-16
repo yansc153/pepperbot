@@ -219,12 +219,50 @@ def update_post_metrics(
         )
 
 
+def _char_bigrams(text: str) -> set[str]:
+    """Character 2-grams for Chinese-friendly Jaccard similarity."""
+    cleaned = "".join(c for c in text if c.strip())
+    if len(cleaned) < 2:
+        return set()
+    return {cleaned[i:i+2] for i in range(len(cleaned) - 1)}
+
+
+def _jaccard(a: set, b: set) -> float:
+    if not a or not b:
+        return 0.0
+    return len(a & b) / len(a | b)
+
+
+# X algo v2: slop_score is triggered by 一稿多发 (republishing with rewording).
+# Hash equality catches verbatim dupes; Jaccard catches rewords within DEDUP_DAYS.
+DEDUP_DAYS = 30
+DEDUP_JACCARD_THRESHOLD = 0.6
+
+
 def is_duplicate(conn: sqlite3.Connection, content: str) -> bool:
     chash = content_hash(content)
     row = conn.execute(
         "SELECT 1 FROM posts WHERE content_hash = ? LIMIT 1", (chash,)
     ).fetchone()
-    return row is not None
+    if row is not None:
+        return True
+
+    new_bigrams = _char_bigrams(content)
+    if not new_bigrams:
+        return False
+
+    rows = conn.execute(
+        """SELECT content FROM posts
+           WHERE created_at >= datetime('now', ?)
+           ORDER BY created_at DESC LIMIT 200""",
+        (f"-{DEDUP_DAYS} days",),
+    ).fetchall()
+
+    for r in rows:
+        sim = _jaccard(new_bigrams, _char_bigrams(r["content"]))
+        if sim >= DEDUP_JACCARD_THRESHOLD:
+            return True
+    return False
 
 
 def get_recent_posts(conn: sqlite3.Connection, limit: int = 50) -> list[dict]:

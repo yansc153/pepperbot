@@ -148,11 +148,51 @@ class TwitterBot:
             await self.page.goto(TWITTER_HOME, wait_until="load", timeout=15000)
             logger.info("Opened new X tab")
 
+    async def fetch_tweet_media_url(self, tweet_url: str) -> str | None:
+        """
+        Open a tweet page in the authenticated context, and try to extract the
+        URL of the first embedded media image. Returns the image URL on success.
+
+        Why this exists: screenshotting an entire tweet card makes pepperbot
+        look like a "搬运号" (copy-paster) — high slop_score risk per X algo v2.
+        Better to grab the original media image when available.
+        """
+        if not self._context:
+            return None
+
+        page = await self._context.new_page()
+        try:
+            await page.goto(tweet_url, wait_until="domcontentloaded", timeout=20000)
+            # Wait for tweet article to render
+            await page.wait_for_selector('article[data-testid="tweet"]', timeout=8000)
+            # Probe for embedded image inside the tweet article
+            media_url = await page.evaluate("""() => {
+                const article = document.querySelector('article[data-testid="tweet"]');
+                if (!article) return null;
+                const img = article.querySelector(
+                    '[data-testid="tweetPhoto"] img, '
+                    + 'div[aria-label="Image"] img, '
+                    + 'a[href*="/photo/"] img'
+                );
+                if (!img) return null;
+                const src = img.src || img.getAttribute('src');
+                if (!src || !src.includes('media')) return null;
+                // Bump resolution to large if possible (pbs.twimg.com supports ?name=large)
+                return src.replace(/&name=\\w+/, '&name=large');
+            }""")
+            return media_url
+        except Exception as exc:
+            logger.debug("fetch_tweet_media_url: %s — %s", tweet_url[:80], exc)
+            return None
+        finally:
+            await page.close()
+
     async def screenshot_tweet(self, tweet_url: str) -> str | None:
         """
         Open a background page in the same authenticated context, navigate to a
         tweet permalink, screenshot the tweet card, and return the local file path.
         Falls back to full-page screenshot if the tweet article element isn't found.
+        Retries once on transient failure.
         """
         if not self._context:
             logger.warning("screenshot_tweet: no browser context available")
@@ -163,28 +203,40 @@ class TwitterBot:
         url_hash = hashlib.md5(tweet_url.encode()).hexdigest()[:12]
         output_path = IMAGE_CACHE_DIR / f"tweet_{url_hash}.jpg"
 
-        page = await self._context.new_page()
-        try:
-            await page.goto(tweet_url, wait_until="load", timeout=20000)
+        for attempt in (1, 2):
+            page = await self._context.new_page()
             try:
-                tweet_el = await page.wait_for_selector(
-                    'article[data-testid="tweet"]', timeout=8000
-                )
-                await tweet_el.screenshot(path=str(output_path), type="jpeg", quality=85)
-            except Exception:
-                await page.screenshot(path=str(output_path), type="jpeg", full_page=False)
+                await page.goto(tweet_url, wait_until="domcontentloaded", timeout=20000)
+                try:
+                    # Wait until network quiets (images loaded) to avoid half-rendered shots
+                    await page.wait_for_load_state("networkidle", timeout=8000)
+                except Exception:
+                    pass
+                try:
+                    tweet_el = await page.wait_for_selector(
+                        'article[data-testid="tweet"]', timeout=8000
+                    )
+                    await tweet_el.screenshot(path=str(output_path), type="jpeg", quality=85)
+                except Exception:
+                    await page.screenshot(path=str(output_path), type="jpeg", full_page=False)
 
-            if output_path.exists() and output_path.stat().st_size > 2048:
-                logger.info("Tweet screenshot saved: %s (%d KB)", output_path.name, output_path.stat().st_size // 1024)
-                return str(output_path)
-            output_path.unlink(missing_ok=True)
-            return None
-        except Exception as exc:
-            logger.warning("screenshot_tweet failed for %s: %s", tweet_url[:80], exc)
-            output_path.unlink(missing_ok=True)
-            return None
-        finally:
-            await page.close()
+                if output_path.exists() and output_path.stat().st_size > 2048:
+                    logger.info(
+                        "Tweet screenshot saved: %s (%d KB, attempt=%d)",
+                        output_path.name, output_path.stat().st_size // 1024, attempt,
+                    )
+                    return str(output_path)
+                output_path.unlink(missing_ok=True)
+            except Exception as exc:
+                logger.warning(
+                    "screenshot_tweet attempt %d failed for %s: %s",
+                    attempt, tweet_url[:80], exc,
+                )
+                output_path.unlink(missing_ok=True)
+            finally:
+                await page.close()
+
+        return None
 
     async def stop(self) -> None:
         """Disconnect from Chrome (doesn't close the browser)."""

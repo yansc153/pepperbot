@@ -216,7 +216,8 @@ async def fetch_image_for_item(item: "ScrapedItem", bot=None) -> str | None:
     """
     Try to get an image for a scraped news item:
     1. If item already has image_url, download it directly.
-    2. For x.com URLs: use bot.screenshot_tweet() (requires authenticated session).
+    2. For x.com URLs: prefer embedded media image (looks like original content),
+       fallback to screenshot of the tweet card (looks like a 搬运号 — slop risk).
     3. For other URLs: fetch og:image via curl.
     Returns local file path or None.
     """
@@ -229,10 +230,22 @@ async def fetch_image_for_item(item: "ScrapedItem", bot=None) -> str | None:
     is_twitter = "x.com" in item.url or "twitter.com" in item.url
 
     if is_twitter and bot is not None:
+        # Step 1: try to grab the original embedded media image
+        # (avoids "搬运号" slop_score per X algo v2)
+        if hasattr(bot, "fetch_tweet_media_url"):
+            media_url = await bot.fetch_tweet_media_url(item.url)
+            if media_url:
+                local = await download_image(media_url)
+                if local:
+                    item.image_url = media_url
+                    logger.info("Using embedded media image from tweet")
+                    return local
+        # Step 2: fall back to tweet card screenshot
         path = await bot.screenshot_tweet(item.url)
         if path:
+            logger.info("Using tweet card screenshot (no embedded media found)")
             return path
-        return None  # curl won't work for x.com — skip
+        return None
 
     if not is_twitter:
         image_url = await fetch_og_image(item.url)
