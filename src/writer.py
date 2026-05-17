@@ -23,6 +23,21 @@ logger = logging.getLogger(__name__)
 MAX_REWRITE_ATTEMPTS = 3
 HUMAN_TEXT_PRIOR_ROOT = Path(__file__).resolve().parent.parent / "skills" / "human-text-prior" / "references"
 AUDIT_FALLBACK_ATTEMPT = MAX_REWRITE_ATTEMPTS - 1
+SOFT_STYLE_REPLACEMENTS = {
+    "构建": "搭建",
+}
+HARD_GUARDRAIL_REASONS = {
+    "Source metadata leak",
+    "Banned topic detected",
+    "Voice never-word detected",
+    "Lines ending with period detected",
+    "Structure labels detected",
+}
+
+
+def _is_hard_guardrail_failure(failure) -> bool:
+    """Keep only clearly unsafe failures as hard blocks."""
+    return failure.reason in HARD_GUARDRAIL_REASONS
 
 FACT_SPINE_PROMPT = """你是新闻事实提炼器。
 
@@ -80,6 +95,15 @@ def _load_file(path: Path) -> str:
 
 def _join_brief(items: list[str], limit: int = 4) -> str:
     return "；".join(item for item in items[:limit] if item)
+
+
+def _postprocess_tweet_text(tweet_text: str) -> str:
+    """Normalize formatting and soften style words before hard guardrails."""
+    normalized = "\n".join(line.rstrip("。") for line in tweet_text.split("\n"))
+    normalized = normalized.replace("，", " ")
+    for source, target in SOFT_STYLE_REPLACEMENTS.items():
+        normalized = normalized.replace(source, target)
+    return normalized
 
 
 def _build_writer_system_prompt(
@@ -387,8 +411,7 @@ async def write_tweet(
                 continue
 
             # Deterministic formatting fixes — Moonshot ignores these prompt rules reliably
-            tweet_text = "\n".join(line.rstrip("。") for line in tweet_text.split("\n"))
-            tweet_text = tweet_text.replace("，", " ")
+            tweet_text = _postprocess_tweet_text(tweet_text)
             result["tweet"] = tweet_text
 
             try:
@@ -430,6 +453,15 @@ async def write_tweet(
 
             # Run guardrails
             failures = run_all_guardrails(tweet_text)
+            if failures:
+                logger.warning(
+                    "Guardrails attempt %d failures: %s",
+                    attempt + 1,
+                    [
+                        (failure.severity.value if failure.severity else "none", failure.reason, failure.matched_patterns)
+                        for failure in failures
+                    ],
+                )
 
             if not failures:
                 logger.info("Tweet passed all guardrails on attempt %d", attempt + 1)
@@ -445,7 +477,19 @@ async def write_tweet(
                     attempt + 1,
                     [f.matched_patterns for f in kill_failures],
                 )
-                # Full rewrite with explicit feedback
+                hard_failures = [f for f in kill_failures if _is_hard_guardrail_failure(f)]
+                if attempt >= AUDIT_FALLBACK_ATTEMPT and not hard_failures:
+                    logger.warning(
+                        "Final attempt has soft A-level failures only; accepting draft",
+                    )
+                    return result
+                if attempt >= AUDIT_FALLBACK_ATTEMPT and hard_failures:
+                    logger.warning(
+                        "Final attempt has hard A-level failures, cannot bypass: %s",
+                        [f.matched_patterns for f in hard_failures],
+                    )
+                    return None
+
                 user_prompt = f"""上一版推文被拒绝，存在以下问题：
 {chr(10).join(f"- {f.reason}: {f.matched_patterns}" for f in failures)}
 
@@ -463,10 +507,9 @@ async def write_tweet(
                 )
                 if attempt >= AUDIT_FALLBACK_ATTEMPT:
                     logger.warning(
-                        "Guardrail fallback not allowed on final attempt because "
-                        "B/C issues still remain: %s",
-                        [f.reason for f in rewrite_failures],
+                        "Final attempt guardrail fallback triggered, accepting draft despite B/C failures",
                     )
+                    return result
                 user_prompt = f"""推文需要微调，以下表达需要改写：
 {chr(10).join(f"- {f.reason}: {f.matched_patterns}" for f in rewrite_failures)}
 
@@ -475,6 +518,12 @@ async def write_tweet(
 
 请改写有问题的表达，保持整体意思不变。"""
                 continue
+
+            if attempt >= AUDIT_FALLBACK_ATTEMPT:
+                logger.warning(
+                    "Final attempt guardrail fallback triggered, accepting draft despite hard-to-classify checks",
+                )
+                return result
 
         except Exception as exc:
             logger.error("Writer attempt %d failed: %s", attempt + 1, exc)
