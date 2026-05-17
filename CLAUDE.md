@@ -176,21 +176,19 @@ Step 7: 等待图片预览 + 点发送
 
 ## 定时任务配置
 
-> 执行方式：本地 macOS crontab → `src/run_slot.sh <slot_name>` → 本地 claude CLI
+> 执行方式：VPS / Docker cron → `scripts/run_slot_vps.sh <slot_name>` → `src/slot_runner.py`
 > Cron 时间为 **UTC**（系统时区 Asia/Shanghai UTC+8）
-> SKILL.md 路径：`/Users/oxjames/Documents/Claude/Scheduled/<slot_name>/SKILL.md`
+> 当前生产目标：`periodic2h` 每 2 小时发 1 篇，即 **12 篇 posts / 天**
 
 | 任务名 | Cron (UTC) | CST 时间 | 内容 |
 |---|---|---|---|
-| pepperbot-slot1 | `0 23 * * *` | 07:00 | 2条推文（AI热点+工具实测）+ 3条KOL评论 + 5点赞 + 1-2关注 |
-| pepperbot-slot2 | `0 3 * * *` | 11:00 | 2条推文（工具+创业认知）+ 3条KOL评论(tier2) + 3点赞 + 1关注 |
-| pepperbot-slot3 | `0 8 * * *` | 16:00 | 2条推文（热点跟进+创业）+ 2条KOL评论 + 3点赞 + 1关注 |
-| pepperbot-slot4 | `0 12 * * *` | 20:00 | 2条推文（争议30%+热点）+ 2条KOL评论 + 3点赞 + 1关注 |
-| pepperbot-slot5 | `0 15 * * *` | 23:00 | 2条深度推文（趋势判断+长期认知）+ 2条KOL评论 + 2点赞 |
-| pepperbot-review | `0 16 * * *` | 00:00 | 数据抓取 + 24h/72h 回测 + 各slot效果对比 + 权重调整 |
+| pepperbot-periodic2h | `0 */2 * * *` | 每 2 小时 | 先抓 KOL list 反应样本，再生成 reaction pack，最后发布 1 篇配图推文 |
+| pepperbot-review | `0 16 * * *` | 00:00 | metrics 抓取 + 24h/72h 回测 + 发帖复盘 + 下一轮写作假设 + 权重调整 |
 
-**前提条件：** Chrome 必须开着，Claude Code Chrome 扩展必须激活连接。
-**日志：** `logs/pepperbot-<slot>-YYYY-MM-DD.log`
+旧的 `slot1`-`slot5` 入口保留为手工兼容路径，生产 Docker cron 不再使用。
+
+**前提条件：** VPS 模式需要有效 cookies 和 Moonshot 环境变量。
+**日志：** `logs/periodic2h.log` / `logs/review.log`
 
 ---
 

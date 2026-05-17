@@ -157,6 +157,21 @@ def _pick_content_type(weights: dict[str, float]) -> str:
     return random.choices(types, weights=probs, k=1)[0]
 
 
+def _scheduler_due_sessions(hour: int, today_key: str, executed: set[str]) -> list[tuple[str, str]]:
+    """Return scheduler sessions due for this hour, with review before posting."""
+    due_sessions: list[tuple[str, str]] = []
+
+    review_key = f"{today_key}_review"
+    if hour == SCHEDULER_HOURS["review"] and review_key not in executed:
+        due_sessions.append(("review", review_key))
+
+    periodic_key = f"{today_key}_periodic2h_{hour}"
+    if hour % 2 == 0 and periodic_key not in executed:
+        due_sessions.append(("periodic2h", periodic_key))
+
+    return due_sessions
+
+
 def _blend_weights(
     base: dict[str, float],
     learned: dict[str, float],
@@ -489,12 +504,12 @@ async def run_scheduler() -> None:
             if not any(today_key in key for key in executed):
                 executed.clear()
 
-            if hour % 2 == 0 and f"{today_key}_periodic2h_{hour}" not in executed:
-                await run_posting_slot(bot, "periodic2h")
-                executed.add(f"{today_key}_periodic2h_{hour}")
-            elif hour == SCHEDULER_HOURS["review"] and f"{today_key}_review" not in executed:
-                await nightly_review(bot)
-                executed.add(f"{today_key}_review")
+            for session, executed_key in _scheduler_due_sessions(hour, today_key, executed):
+                if session == "review":
+                    await nightly_review(bot)
+                elif session == "periodic2h":
+                    await run_posting_slot(bot, "periodic2h")
+                executed.add(executed_key)
 
             await asyncio.sleep(300)
     finally:
