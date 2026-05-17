@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 MAX_REWRITE_ATTEMPTS = 3
 HUMAN_TEXT_PRIOR_ROOT = Path(__file__).resolve().parent.parent / "skills" / "human-text-prior" / "references"
+AUDIT_FALLBACK_ATTEMPT = MAX_REWRITE_ATTEMPTS - 1
 
 FACT_SPINE_PROMPT = """你是新闻事实提炼器。
 
@@ -397,7 +398,20 @@ async def write_tweet(
                 audit = {"verdict": "pass", "why_it_reads_ai": [], "surgical_fixes": [], "rewrite_focus": ""}
 
             if audit.get("verdict") == "needs_rewrite":
-                user_prompt = f"""上一版推文太像模板/AI 总结腔，需要局部重写。
+                logger.warning(
+                    "Anti-template audit attempt %d: focus=%s problems=%s fixes=%s",
+                    attempt + 1,
+                    audit.get("rewrite_focus", ""),
+                    audit.get("why_it_reads_ai", []),
+                    audit.get("surgical_fixes", []),
+                )
+                if attempt >= AUDIT_FALLBACK_ATTEMPT:
+                    logger.warning(
+                        "Anti-template audit fallback triggered on final attempt, "
+                        "accepting draft if guardrails pass",
+                    )
+                else:
+                    user_prompt = f"""上一版推文太像模板/AI 总结腔，需要局部重写。
 
 问题：
 {chr(10).join(f"- {item}" for item in audit.get("why_it_reads_ai", []))}
@@ -412,7 +426,7 @@ async def write_tweet(
 {tweet_text}
 
 要求：保留事实骨架和立场，不要整条推倒重来，只把最像模板的地方改掉。"""
-                continue
+                    continue
 
             # Run guardrails
             failures = run_all_guardrails(tweet_text)
@@ -447,6 +461,12 @@ async def write_tweet(
                     attempt + 1,
                     [f.matched_patterns for f in rewrite_failures],
                 )
+                if attempt >= AUDIT_FALLBACK_ATTEMPT:
+                    logger.warning(
+                        "Guardrail fallback not allowed on final attempt because "
+                        "B/C issues still remain: %s",
+                        [f.reason for f in rewrite_failures],
+                    )
                 user_prompt = f"""推文需要微调，以下表达需要改写：
 {chr(10).join(f"- {f.reason}: {f.matched_patterns}" for f in rewrite_failures)}
 

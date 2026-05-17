@@ -108,6 +108,53 @@ class WriterPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(writer.ANGLE_CARD_PROMPT, calls)
         self.assertIn(writer.ANTI_TEMPLATE_AUDIT_PROMPT, calls)
 
+    async def test_write_tweet_falls_back_on_final_audit_attempt(self) -> None:
+        audit_calls = 0
+
+        async def fake_call_claude_json(*, system_prompt: str, user_prompt: str, max_tokens: int, temperature: float):
+            nonlocal audit_calls
+            if system_prompt == writer.FACT_SPINE_PROMPT:
+                return {
+                    "fact_spine": ["产品上了手机端"],
+                    "most_telling_fact": "入口扩张",
+                    "image_anchor": "产品界面截图",
+                    "uncertainty": "none",
+                }
+            if system_prompt == writer.ANGLE_CARD_PROMPT:
+                return {
+                    "posture": "quick_judgment",
+                    "stance": "入口变大了 但主场景没变",
+                    "hook_style": "先讲反差",
+                    "surprise_move": "功能很强 但多数人只会轻用",
+                    "supporting_move": "解释使用强度",
+                    "ending_style": "收回到场景",
+                    "avoid": ["官宣复述"],
+                    "writer_brief": "像真人第一反应",
+                }
+            if system_prompt == writer.ANTI_TEMPLATE_AUDIT_PROMPT:
+                audit_calls += 1
+                return {
+                    "verdict": "needs_rewrite",
+                    "why_it_reads_ai": ["句子太平均"],
+                    "surgical_fixes": ["把第一句改得更像第一反应"],
+                    "rewrite_focus": "第一行",
+                }
+            return {
+                "tweet": "手机端也能直接开了\n\n功能当然更全了\n\n但大多数人还是先拿来做轻任务",
+                "image_prompt": "产品界面截图",
+                "hook_used": "反差开头",
+                "self_eval": "像第一反应",
+            }
+
+        with patch.object(writer, "call_claude_json", side_effect=fake_call_claude_json):
+            result = await writer.write_tweet(
+                content_type="ai_hot_take",
+                source_material="标题: 产品上了手机端",
+            )
+
+        self.assertIsNotNone(result)
+        self.assertGreaterEqual(audit_calls, 1)
+
 
 if __name__ == "__main__":
     unittest.main()
