@@ -10,6 +10,7 @@ import slot_runner
 
 class SlotRunnerPostingOnlyTests(unittest.TestCase):
     def test_slot_mapping_has_observe_and_review(self) -> None:
+        self.assertEqual(slot_runner.SLOT_TO_SESSION["periodic2h"], "periodic2h")
         self.assertEqual(slot_runner.SLOT_TO_SESSION["slot1"], "slot1")
         self.assertEqual(slot_runner.SLOT_TO_SESSION["slot5"], "slot5")
         self.assertEqual(slot_runner.SLOT_TO_SESSION["observe"], "observe")

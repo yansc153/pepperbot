@@ -3,10 +3,11 @@
 Slot entry point for cron scheduling. Maps slot names to main.py sessions.
 
 Usage:
-  python src/slot_runner.py --slot slot1               # run posting slot
-  python src/slot_runner.py --slot slot1 --dry-run     # scrape + generate only, no post
+  python src/slot_runner.py --slot periodic2h               # run 12 posts/day mode
+  python src/slot_runner.py --slot periodic2h --dry-run     # scrape + generate only, no post
 
 Slot → session mapping (CST):
+  periodic2h → posting slot every 2 hours
   slot1   → posting slot 1 (07:00)
   slot2   → posting slot 2 (11:00)
   slot3   → posting slot 3 (16:00)
@@ -36,6 +37,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from config import LOG_FORMAT, LOG_DATE_FORMAT
 
 SLOT_TO_SESSION = {
+    "periodic2h": "periodic2h",
     "slot1": "slot1",
     "slot2": "slot2",
     "slot3": "slot3",
@@ -90,6 +92,7 @@ async def _dry_run(session: str) -> None:
     logger.info("[DRY RUN] scraped %d items", len(news_items))
 
     content_type_map = {
+        "periodic2h": "ai_hot_take",
         "slot1": "ai_hot_take",
         "slot2": "ai_tool_review",
         "slot3": "startup_cognition",
@@ -160,7 +163,7 @@ def main() -> None:
         "--slot",
         required=True,
         choices=list(SLOT_TO_SESSION.keys()),
-        help="Slot name: slot1-slot5, observe, or review",
+        help="Slot name: periodic2h, slot1-slot5, observe, or review",
     )
     parser.add_argument(
         "--dry-run",

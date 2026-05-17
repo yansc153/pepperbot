@@ -109,6 +109,7 @@ def _postprocess_tweet_text(tweet_text: str) -> str:
 def _build_writer_system_prompt(
     content_type: str,
     reaction_pack: dict | None = None,
+    learning_context: dict | None = None,
 ) -> str:
     """Build the full system prompt for the writer LLM call."""
     persona = _load_file(PERSONA_PATH)
@@ -134,6 +135,37 @@ def _build_writer_system_prompt(
 """
 
     human_prior_block = _build_human_prior_block()
+    learning_block = ""
+    if learning_context:
+        winning = _join_brief(learning_context.get("winning_patterns", []), limit=4)
+        losing = _join_brief(learning_context.get("losing_patterns", []), limit=4)
+        calibration = _join_brief(learning_context.get("human_calibration_notes", []), limit=4)
+        hypotheses = _join_brief(learning_context.get("next_writing_hypotheses", []), limit=4)
+        review_summary = learning_context.get("review_summary", "")
+        summary_weight_hints = ""
+        strategy_adjustment = learning_context.get("strategy_adjustment", {})
+        if isinstance(strategy_adjustment, dict):
+            weights = strategy_adjustment.get("weights")
+            if isinstance(weights, dict):
+                summary_weight_hints = (
+                    "学习后权重建议: "
+                    f"ai_hot_take={weights.get('ai_hot_take', 0.0)} "
+                    f"ai_tool_review={weights.get('ai_tool_review', 0.0)} "
+                    f"startup_cognition={weights.get('startup_cognition', 0.0)} "
+                    f"controversy={weights.get('controversy', 0.0)} "
+                    f"kol_interaction={weights.get('kol_interaction', 0.0)}"
+                )
+
+        learning_block = f"""
+
+## 复盘学习上下文（review -> 下一轮）
+- 赢在形式：{winning or '无'}
+- 失误点：{losing or '无'}
+- 人味建议：{calibration or '无'}
+- 下轮假设：{hypotheses or '无'}
+- 一句话复盘：{review_summary or '无'}
+- {summary_weight_hints or '无'}
+"""
 
     return f"""你是 @pepperfr1ends（花椒），一个 AI/OPC 创业者的 Twitter 账号。
 
@@ -152,6 +184,7 @@ def _build_writer_system_prompt(
 ## 内容模板（{content_type}）
 {template[:1000]}
 {reaction_block}
+{learning_block}
 
 ## human-text-prior 结构校准
 {human_prior_block}
@@ -318,6 +351,7 @@ async def write_tweet(
     source_material: str = "",
     extra_context: str = "",
     reaction_pack: dict | None = None,
+    learning_context: dict | None = None,
 ) -> dict | None:
     """
     Generate a single tweet.
@@ -326,7 +360,11 @@ async def write_tweet(
     Returns dict with tweet, image_prompt, hook_used, self_eval.
     Returns None if all attempts fail.
     """
-    system_prompt = _build_writer_system_prompt(content_type, reaction_pack)
+    system_prompt = _build_writer_system_prompt(
+        content_type,
+        reaction_pack=reaction_pack,
+        learning_context=learning_context,
+    )
     try:
         fact_spine = await _build_fact_spine(source_material)
     except Exception as exc:

@@ -11,7 +11,6 @@ strategy weights in the default runtime path.
 
 import json
 import logging
-from datetime import datetime, timezone
 
 from llm import call_claude_json
 from database import (
@@ -22,10 +21,12 @@ from database import (
     get_recent_reaction_observations,
     update_circuit_breaker,
     get_circuit_breaker,
+    save_strategy_weights,
 )
 from config import (
     CIRCUIT_BREAKER_THRESHOLD,
     KOL_LIST_URL,
+    DEFAULT_WEIGHTS,
 )
 
 logger = logging.getLogger(__name__)
@@ -77,6 +78,56 @@ POST_REVIEW_PROMPT = """你是 @pepperfr1ends 的发帖复盘分析师。
   "review_summary": "<一句话总结>"
 }
 """
+
+
+def _normalize_weights(weights: dict[str, float]) -> dict[str, float]:
+    """Normalize a weight dict into a probability distribution."""
+    total = sum(weights.values()) or 1.0
+    return {key: max(0.0, value / total) for key, value in weights.items()}
+
+
+def _derive_weights_from_review(posts: list[dict]) -> dict[str, float]:
+    """Derive a simple content-weight adjustment from latest post performance."""
+    if len(posts) < 3:
+        return DEFAULT_WEIGHTS.as_dict()
+
+    score_by_type: dict[str, list[int]] = {}
+    for post in posts[:20]:
+        content_type = post.get("content_type", "")
+        score = int(post.get("score_total", 0))
+        if not content_type:
+            continue
+        score_by_type.setdefault(content_type, []).append(score)
+
+    if not score_by_type:
+        return DEFAULT_WEIGHTS.as_dict()
+
+    avg_by_type = {
+        content_type: (sum(scores) / len(scores))
+        for content_type, scores in score_by_type.items()
+    }
+    if not avg_by_type:
+        return DEFAULT_WEIGHTS.as_dict()
+
+    best_type = max(avg_by_type, key=avg_by_type.get)
+    worst_type = min(avg_by_type, key=avg_by_type.get)
+
+    tuned = DEFAULT_WEIGHTS.as_dict()
+    tuned[best_type] = tuned.get(best_type, 0.0) + 0.08
+    tuned[worst_type] = max(0.0, tuned.get(worst_type, 0.0) - 0.08)
+    # keep posting-only profile for now
+    tuned["kol_interaction"] = 0.0
+    return _normalize_weights(tuned)
+
+
+def _parse_learning_json(payload: str) -> list[str] | dict:
+    if not payload:
+        return []
+    try:
+        parsed = json.loads(payload)
+    except json.JSONDecodeError:
+        return []
+    return parsed
 
 
 async def observe_kol_reactions(bot, max_posts: int = 30) -> int:
@@ -213,7 +264,7 @@ async def build_reaction_pack(
 async def analyze_own_posts() -> dict:
     """
     Review published post performance and extract the next writing hypotheses.
-    This does not mutate strategy weights in the default runtime path.
+    Persist the review into learning_log and strategy_weights for next posting cycles.
     """
     conn = get_connection()
     posts = get_recent_posts(conn, limit=30)
@@ -281,22 +332,64 @@ async def analyze_own_posts() -> dict:
     analysis.setdefault("human_calibration_notes", [])
     analysis.setdefault("review_summary", "")
 
+    strategy_adjustment = {
+        "losing_patterns": analysis.get("losing_patterns", []),
+        "next_writing_hypotheses": analysis.get("next_writing_hypotheses", []),
+        "human_calibration_notes": analysis.get("human_calibration_notes", []),
+        "review_summary": analysis.get("review_summary", ""),
+    }
+    strategy_adjustment["weights"] = _derive_weights_from_review(published)
+
     insert_learning_log(
         conn=conn,
         learning_type="post_review_summary",
         techniques_extracted=json.dumps(analysis.get("winning_patterns", []), ensure_ascii=False),
-        strategy_adjustment=json.dumps(
-            {
-                "losing_patterns": analysis.get("losing_patterns", []),
-                "next_writing_hypotheses": analysis.get("next_writing_hypotheses", []),
-                "human_calibration_notes": analysis.get("human_calibration_notes", []),
-                "review_summary": analysis.get("review_summary", ""),
-            },
-            ensure_ascii=False,
-        ),
+        strategy_adjustment=json.dumps(strategy_adjustment, ensure_ascii=False),
     )
+    save_strategy_weights(conn, strategy_adjustment["weights"], reason="post_review_summary")
     conn.close()
     return analysis
+
+
+def get_latest_review_learning() -> dict:
+    """Read the most recent post review learning record as writer context."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT * FROM learning_log WHERE learning_type = ? ORDER BY applied_at DESC LIMIT 1",
+            ("post_review_summary",),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if not row:
+        return {
+            "status": "missing",
+            "winning_patterns": [],
+            "losing_patterns": [],
+            "next_writing_hypotheses": [],
+            "human_calibration_notes": [],
+            "review_summary": "",
+            "strategy_adjustment": {},
+            "applied_at": None,
+            "source_post_id": None,
+        }
+
+    strategy_adjustment: dict = _parse_learning_json(row["strategy_adjustment"]) or {}
+    if not isinstance(strategy_adjustment, dict):
+        strategy_adjustment = {}
+
+    return {
+        "status": "ok",
+        "winning_patterns": _parse_learning_json(row["techniques_extracted"]) or [],
+        "losing_patterns": strategy_adjustment.get("losing_patterns", []),
+        "next_writing_hypotheses": strategy_adjustment.get("next_writing_hypotheses", []),
+        "human_calibration_notes": strategy_adjustment.get("human_calibration_notes", []),
+        "review_summary": strategy_adjustment.get("review_summary", ""),
+        "strategy_adjustment": strategy_adjustment,
+        "applied_at": row["applied_at"],
+        "source_post_id": row["source_post_id"],
+    }
 
 
 async def check_circuit_breaker() -> bool:

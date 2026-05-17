@@ -32,6 +32,43 @@ class WriterHumanCalibrationTests(unittest.TestCase):
         self.assertNotIn("每条推文至少用 1-2 个", system_prompt)
         self.assertIn("不必强行喊口号或暴论", system_prompt)
 
+    def test_learning_context_is_in_prompt(self) -> None:
+        system_prompt = writer._build_writer_system_prompt(  # noqa: SLF001
+            "ai_hot_take",
+            reaction_pack={
+                "status": "ok",
+                "what_everyone_noticed": ["价格变化"],
+                "angle_patterns": ["先看成本"],
+                "hook_patterns": ["真正该看的不是X 是Y"],
+                "surprise_patterns": ["先讲反常识"],
+                "avoid_patterns": ["复述官宣"],
+                "underused_angle": "分发成本",
+                "suggested_stance": "别急着吹能力",
+                "freshness_note": "适合快评",
+                "writer_notes": ["一开始先亮判断"],
+            },
+            learning_context={
+                "winning_patterns": ["开头要给结论后再给判断"],
+                "losing_patterns": ["第一句口语化"],
+                "human_calibration_notes": ["少用夸张词"],
+                "next_writing_hypotheses": ["增加反常识例子"],
+                "review_summary": "用户更喜欢有立场并带例证的版本",
+                "strategy_adjustment": {
+                    "weights": {
+                        "ai_hot_take": 0.42,
+                        "ai_tool_review": 0.18,
+                        "startup_cognition": 0.22,
+                        "controversy": 0.18,
+                        "kol_interaction": 0.0,
+                    },
+                },
+            },
+        )
+        self.assertIn("复盘学习上下文（review -> 下一轮）", system_prompt)
+        self.assertIn("赢在形式", system_prompt)
+        self.assertIn("失误点", system_prompt)
+        self.assertIn("学习后权重建议", system_prompt)
+
     def test_human_prior_block_preserves_fact_rule(self) -> None:
         human_prior = writer._build_human_prior_block()  # noqa: SLF001
         self.assertIn("fact_rule: humanize the delivery, not the facts", human_prior)

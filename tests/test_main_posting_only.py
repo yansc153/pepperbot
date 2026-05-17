@@ -13,8 +13,11 @@ class MainPostingOnlyTests(unittest.TestCase):
         for profile in main.POSTING_SLOT_PROFILES.values():
             self.assertEqual(profile["weights"]["kol_interaction"], 0.0)
 
-    def test_all_posting_slots_publish_two_posts(self) -> None:
-        for profile in main.POSTING_SLOT_PROFILES.values():
+    def test_all_posting_slots_target_count(self) -> None:
+        self.assertEqual(main.POSTING_SLOT_PROFILES["periodic2h"]["target_count"], 1)
+        for slot_name, profile in main.POSTING_SLOT_PROFILES.items():
+            if slot_name == "periodic2h":
+                continue
             self.assertEqual(profile["target_count"], 2)
 
     def test_scheduler_hours_match_documented_slots(self) -> None:

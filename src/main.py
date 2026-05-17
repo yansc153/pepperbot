@@ -2,6 +2,7 @@
 Main orchestrator for the posting-only pepperbot.
 
 Runtime contract:
+  - periodic2h: posting every 2 hours
   - slot1-slot5: posting only
   - observe: KOL list observation only
   - review: metrics + post review only
@@ -28,6 +29,7 @@ from database import (
     init_database,
     get_connection,
     insert_post,
+    get_latest_weights,
     mark_post_published,
     is_duplicate,
     get_today_post_count,
@@ -45,6 +47,7 @@ from learner import (
     build_reaction_pack,
     check_circuit_breaker,
     observe_kol_reactions,
+    get_latest_review_learning,
 )
 from obsidian_logger import (
     log_post,
@@ -65,6 +68,17 @@ logging.basicConfig(
 logger = logging.getLogger("main")
 
 POSTING_SLOT_PROFILES: dict[str, dict] = {
+    "periodic2h": {
+        "label": "Every 2h feedback-driven post",
+        "target_count": 1,
+        "weights": {
+            "ai_hot_take": 0.30,
+            "ai_tool_review": 0.25,
+            "startup_cognition": 0.25,
+            "controversy": 0.20,
+            "kol_interaction": 0.00,
+        },
+    },
     "slot1": {
         "label": "07:00 fast AI read",
         "target_count": 2,
@@ -143,6 +157,26 @@ def _pick_content_type(weights: dict[str, float]) -> str:
     return random.choices(types, weights=probs, k=1)[0]
 
 
+def _blend_weights(
+    base: dict[str, float],
+    learned: dict[str, float],
+    alpha: float = 0.6,
+) -> dict[str, float]:
+    """
+    Blend base profile weights with learned weights.
+    Higher alpha means more weight is given to learnings.
+    """
+    if not learned:
+        return base
+
+    blended = {
+        content_type: (1 - alpha) * base.get(content_type, 0.0)
+        + alpha * learned.get(content_type, 0.0)
+        for content_type in base
+    }
+    return _normalize_weights(blended)
+
+
 def _build_source_material(item: ScrapedItem | None) -> str:
     if not item:
         return ""
@@ -179,6 +213,7 @@ async def _generate_and_publish_posts(
     target_count: int,
     news_items: list[ScrapedItem],
     weights: dict[str, float],
+    learning_context: dict[str, object] | None = None,
 ) -> int:
     """
     Deterministic posting-only loop:
@@ -210,6 +245,7 @@ async def _generate_and_publish_posts(
                 content_type=content_type,
                 source_material=source_material,
                 reaction_pack=reaction_pack,
+                learning_context=learning_context,
             )
             if not result:
                 logger.warning("[%s] Tweet generation failed for %s", slot_name, content_type)
@@ -232,6 +268,7 @@ async def _generate_and_publish_posts(
                     source_material=source_material,
                     extra_context=f"上一版评分{scores['total']}/85，需要更具体、更自然",
                     reaction_pack=reaction_pack,
+                    learning_context=learning_context,
                 )
                 if not result:
                     continue
@@ -308,7 +345,14 @@ async def run_posting_slot(bot: TwitterBot, slot_name: str) -> int:
         return 0
 
     profile = POSTING_SLOT_PROFILES[slot_name]
-    weights = _normalize_weights(profile["weights"])
+    base_weights = _normalize_weights(profile["weights"])
+    weight_conn = get_connection()
+    try:
+        latest_weights = get_latest_weights(weight_conn)
+    finally:
+        weight_conn.close()
+    weights = _blend_weights(base_weights, latest_weights or {})
+    learning_context = get_latest_review_learning()
     await observe_kol_reactions(bot, max_posts=20)
     news_items = await scrape_all_news()
     logger.info("[%s] scraped %d AIHOT items", slot_name, len(news_items))
@@ -319,6 +363,7 @@ async def run_posting_slot(bot: TwitterBot, slot_name: str) -> int:
         target_count=profile["target_count"],
         news_items=news_items,
         weights=weights,
+        learning_context=learning_context,
     )
     logger.info("=== %s DONE: %d posts ===", slot_name.upper(), published)
     return published
@@ -444,24 +489,9 @@ async def run_scheduler() -> None:
             if not any(today_key in key for key in executed):
                 executed.clear()
 
-            if hour % 2 == 0 and f"{today_key}_observe_{hour}" not in executed:
-                await run_observe_session(bot)
-                executed.add(f"{today_key}_observe_{hour}")
-            elif hour == SCHEDULER_HOURS["slot1"] and f"{today_key}_slot1" not in executed:
-                await run_posting_slot(bot, "slot1")
-                executed.add(f"{today_key}_slot1")
-            elif hour == SCHEDULER_HOURS["slot2"] and f"{today_key}_slot2" not in executed:
-                await run_posting_slot(bot, "slot2")
-                executed.add(f"{today_key}_slot2")
-            elif hour == SCHEDULER_HOURS["slot3"] and f"{today_key}_slot3" not in executed:
-                await run_posting_slot(bot, "slot3")
-                executed.add(f"{today_key}_slot3")
-            elif hour == SCHEDULER_HOURS["slot4"] and f"{today_key}_slot4" not in executed:
-                await run_posting_slot(bot, "slot4")
-                executed.add(f"{today_key}_slot4")
-            elif hour == SCHEDULER_HOURS["slot5"] and f"{today_key}_slot5" not in executed:
-                await run_posting_slot(bot, "slot5")
-                executed.add(f"{today_key}_slot5")
+            if hour % 2 == 0 and f"{today_key}_periodic2h_{hour}" not in executed:
+                await run_posting_slot(bot, "periodic2h")
+                executed.add(f"{today_key}_periodic2h_{hour}")
             elif hour == SCHEDULER_HOURS["review"] and f"{today_key}_review" not in executed:
                 await nightly_review(bot)
                 executed.add(f"{today_key}_review")
@@ -504,7 +534,18 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="PepperBot — posting-only automation")
     parser.add_argument(
         "--session",
-        choices=["slot1", "slot2", "slot3", "slot4", "slot5", "observe", "review", "backtest", "scheduler"],
+        choices=[
+            "periodic2h",
+            "slot1",
+            "slot2",
+            "slot3",
+            "slot4",
+            "slot5",
+            "observe",
+            "review",
+            "backtest",
+            "scheduler",
+        ],
         default="scheduler",
         help="Run a specific session or start the compatibility scheduler",
     )
