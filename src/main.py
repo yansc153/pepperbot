@@ -239,9 +239,15 @@ async def _generate_and_publish_posts(
     today_total = get_today_post_count(conn)
 
     try:
-        for _ in range(target_count):
+        max_attempts = max(target_count * 3, target_count)
+        attempts = 0
+        while published < target_count and attempts < max_attempts:
+            attempts += 1
             if today_total + published >= MAX_POSTS_PER_DAY:
                 logger.warning("Daily post cap reached: %d", MAX_POSTS_PER_DAY)
+                break
+            if not news_items:
+                logger.warning("[%s] No source-backed news items left, stopping", slot_name)
                 break
 
             content_type = _pick_content_type(weights)
