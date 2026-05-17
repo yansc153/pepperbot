@@ -3,16 +3,17 @@
 Slot entry point for cron scheduling. Maps slot names to main.py sessions.
 
 Usage:
-  python src/slot_runner.py --slot slot1               # run morning session
+  python src/slot_runner.py --slot slot1               # run posting slot
   python src/slot_runner.py --slot slot1 --dry-run     # scrape + generate only, no post
 
 Slot → session mapping (CST):
-  slot1  → morning  (07:00)
-  slot2  → noon     (11:00)
-  slot3  → evening  (16:00)
-  slot4  → evening  (20:00)
-  slot5  → evening  (23:00)
-  review → review   (00:00)
+  slot1   → posting slot 1 (07:00)
+  slot2   → posting slot 2 (11:00)
+  slot3   → posting slot 3 (16:00)
+  slot4   → posting slot 4 (20:00)
+  slot5   → posting slot 5 (23:00)
+  observe → continuous KOL observation
+  review  → metrics + post review
 
 Set env vars before running:
   HEADLESS=true             use headless Chromium (VPS)
@@ -35,11 +36,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from config import LOG_FORMAT, LOG_DATE_FORMAT
 
 SLOT_TO_SESSION = {
-    "slot1": "morning",
-    "slot2": "noon",
-    "slot3": "evening",
-    "slot4": "evening",
-    "slot5": "evening",
+    "slot1": "slot1",
+    "slot2": "slot2",
+    "slot3": "slot3",
+    "slot4": "slot4",
+    "slot5": "slot5",
+    "observe": "observe",
     "review": "review",
 }
 
@@ -75,10 +77,10 @@ def _check_cookie_age() -> None:
 
 
 async def _dry_run(session: str) -> None:
-    """Print what would be scraped and generated without posting."""
+    """Print what would be generated without posting or interacting."""
     from database import init_database
     from scraper import scrape_all_news
-    from learner import get_learned_techniques
+    from learner import build_reaction_pack
     from writer import write_tweet
     from guardrails import run_all_guardrails
 
@@ -87,33 +89,44 @@ async def _dry_run(session: str) -> None:
     news_items = await scrape_all_news()
     logger.info("[DRY RUN] scraped %d items", len(news_items))
 
-    techniques = get_learned_techniques()
-
     content_type_map = {
-        "morning": "ai_hot_take",
-        "noon": "ai_tool_review",
-        "evening": "startup_cognition",
+        "slot1": "ai_hot_take",
+        "slot2": "ai_tool_review",
+        "slot3": "startup_cognition",
+        "slot4": "controversy",
+        "slot5": "startup_cognition",
+        "observe": None,
         "review": None,
     }
     content_type = content_type_map.get(session, "ai_hot_take")
 
     if content_type is None:
-        logger.info("[DRY RUN] review session — no content generation, dry run complete")
+        logger.info("[DRY RUN] %s session — no post generation, dry run complete", session)
         return
 
     source_material = ""
+    source_url = ""
+    source_title = ""
     if news_items:
         item = news_items[0]
         parts = [f"标题: {item.title}"]
         if item.summary:
             parts.append(f"摘要: {item.summary}")
         source_material = "\n".join(parts)
+        source_url = item.url
+        source_title = item.title
+
+    reaction_pack = await build_reaction_pack(
+        source_material=source_material,
+        source_url=source_url,
+        source_title=source_title,
+    )
 
     logger.info("[DRY RUN] generating tweet (type=%s)...", content_type)
     result = await write_tweet(
         content_type=content_type,
         source_material=source_material,
-        techniques=techniques,
+        reaction_pack=reaction_pack,
     )
 
     if result:
@@ -147,7 +160,7 @@ def main() -> None:
         "--slot",
         required=True,
         choices=list(SLOT_TO_SESSION.keys()),
-        help="Slot name: slot1-slot5 or review",
+        help="Slot name: slot1-slot5, observe, or review",
     )
     parser.add_argument(
         "--dry-run",

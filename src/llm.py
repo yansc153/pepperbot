@@ -81,7 +81,6 @@ async def _call_claude_cli(
         CLAUDE_CLI_PATH,
         "-p", user_prompt,
         "--model", CLAUDE_MODEL,
-        "--max-tokens", str(max_tokens),
         "--output-format", "text",
     ]
 
@@ -144,7 +143,6 @@ async def _call_claude_fallback(
         CLAUDE_CLI_PATH,
         "-p", combined_prompt,
         "--model", CLAUDE_MODEL,
-        "--max-tokens", str(max_tokens),
         "--output-format", "text",
     ]
 
@@ -228,7 +226,6 @@ async def call_claude_with_file(
         CLAUDE_CLI_PATH,
         "-p", user_prompt,
         "--model", CLAUDE_MODEL,
-        "--max-tokens", str(max_tokens),
         "--output-format", "text",
     ]
 
@@ -256,7 +253,6 @@ async def call_claude_with_file(
                 cmd2 = [
                     CLAUDE_CLI_PATH, "-p", combined,
                     "--model", CLAUDE_MODEL,
-                    "--max-tokens", str(max_tokens),
                     "--output-format", "text",
                 ]
                 if file_path:

@@ -6,7 +6,7 @@ All writes use transactions. Backup before schema changes.
 
 import sqlite3
 import hashlib
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -153,6 +153,19 @@ CREATE TABLE IF NOT EXISTS technique_library (
     added_at TEXT DEFAULT (datetime('now'))
 );
 
+-- Continuous KOL reaction observation (read-only learning input)
+CREATE TABLE IF NOT EXISTS reaction_observations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    post_url TEXT UNIQUE NOT NULL,
+    kol_handle TEXT NOT NULL,
+    post_text TEXT NOT NULL,
+    posted_at TEXT,
+    observed_at TEXT DEFAULT (datetime('now')),
+    likes INTEGER DEFAULT 0,
+    retweets INTEGER DEFAULT 0,
+    replies INTEGER DEFAULT 0
+);
+
 -- Initialize circuit breaker row
 INSERT OR IGNORE INTO circuit_breaker (id, consecutive_zero_interaction, is_paused)
 VALUES (1, 0, 0);
@@ -251,6 +264,46 @@ def get_posts_needing_metrics(conn: sqlite3.Connection, limit: int = 20) -> list
              AND tweet_url != ''
            ORDER BY published_at DESC LIMIT ?""",
         (limit,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ── Reaction observations ──
+
+def insert_reaction_observation(
+    conn: sqlite3.Connection,
+    kol_handle: str,
+    post_url: str,
+    post_text: str,
+    posted_at: str = "",
+    likes: int = 0,
+    retweets: int = 0,
+    replies: int = 0,
+) -> int:
+    """Insert a raw KOL reaction sample. Duplicate post URLs are ignored."""
+    with conn:
+        cursor = conn.execute(
+            """INSERT OR IGNORE INTO reaction_observations
+               (post_url, kol_handle, post_text, posted_at, likes, retweets, replies)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (post_url, kol_handle, post_text, posted_at, likes, retweets, replies),
+        )
+    return cursor.lastrowid
+
+
+def get_recent_reaction_observations(
+    conn: sqlite3.Connection,
+    since_hours: int = 8,
+    limit: int = 60,
+) -> list[dict]:
+    """Get recent KOL reactions for reaction-pack distillation."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=since_hours)).isoformat()
+    rows = conn.execute(
+        """SELECT * FROM reaction_observations
+           WHERE COALESCE(posted_at, observed_at) >= ?
+           ORDER BY COALESCE(posted_at, observed_at) DESC
+           LIMIT ?""",
+        (cutoff, limit),
     ).fetchall()
     return [dict(r) for r in rows]
 
@@ -398,6 +451,35 @@ def get_all_techniques(conn: sqlite3.Connection) -> list[dict]:
         "SELECT * FROM technique_library ORDER BY success_rate DESC"
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+# ── Learning log ──
+
+def insert_learning_log(
+    conn: sqlite3.Connection,
+    learning_type: str,
+    source_post_id: int | None = None,
+    kol_handle: str = "",
+    kol_post_url: str = "",
+    techniques_extracted: str = "",
+    strategy_adjustment: str = "",
+) -> int:
+    with conn:
+        cursor = conn.execute(
+            """INSERT INTO learning_log
+               (learning_type, source_post_id, kol_handle, kol_post_url,
+                techniques_extracted, strategy_adjustment)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                learning_type,
+                source_post_id,
+                kol_handle,
+                kol_post_url,
+                techniques_extracted,
+                strategy_adjustment,
+            ),
+        )
+    return cursor.lastrowid
 
 
 # ── Daily stats ──

@@ -3,7 +3,7 @@
 # Called as: run_slot_vps.sh <slot_name>
 set -euo pipefail
 
-SLOT="${1:?Usage: run_slot_vps.sh <slot1|slot2|slot3|slot4|slot5|review>}"
+SLOT="${1:?Usage: run_slot_vps.sh <slot1|slot2|slot3|slot4|slot5|observe|review>}"
 cd /app
 
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] START slot=$SLOT"

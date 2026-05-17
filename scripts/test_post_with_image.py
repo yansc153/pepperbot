@@ -46,7 +46,8 @@ async def main() -> None:
                 break
 
         if not image_path:
-            logger.warning("No image found — will post text-only")
+            logger.error("No image found — aborting, posting-only runtime requires an image")
+            return
 
         logger.info("Posting tweet (image=%s)...", image_path)
         url = await bot.post_tweet(TWEET_TEXT, image_path=image_path)

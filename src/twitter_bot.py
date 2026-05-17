@@ -559,15 +559,18 @@ class TwitterBot:
 
                     time_el = await tweet_el.query_selector("time")
                     post_url = profile_url
+                    posted_at = ""
                     if time_el:
                         parent_a = await time_el.evaluate("el => el.closest('a')?.href")
                         if parent_a:
                             post_url = parent_a
+                        posted_at = await time_el.get_attribute("datetime") or ""
 
                     posts.append({
                         "handle": f"@{handle}",
                         "tier": tier,
                         "post_url": post_url,
+                        "posted_at": posted_at,
                         "content": text,
                         "likes": likes,
                         "retweets": retweets,
@@ -772,15 +775,18 @@ class TwitterBot:
                 # Get post URL
                 time_el = await tweet_el.query_selector("time")
                 post_url = ""
+                posted_at = ""
                 if time_el:
                     parent_a = await time_el.evaluate("el => el.closest('a')?.href")
                     if parent_a:
                         post_url = str(parent_a)
+                    posted_at = await time_el.get_attribute("datetime") or ""
 
                 posts.append({
                     "handle": handle,
                     "tier": "unknown",  # will be enriched by engagement.py
                     "post_url": post_url,
+                    "posted_at": posted_at,
                     "content": text,
                     "likes": likes,
                     "retweets": retweets,
@@ -847,15 +853,18 @@ class TwitterBot:
                 # Get post URL
                 time_el = await tweet_el.query_selector("time")
                 post_url = ""
+                posted_at = ""
                 if time_el:
                     parent_a = await time_el.evaluate("el => el.closest('a')?.href")
                     if parent_a:
                         post_url = str(parent_a)
+                    posted_at = await time_el.get_attribute("datetime") or ""
 
                 posts.append({
                     "handle": handle,
                     "tier": "unknown",
                     "post_url": post_url,
+                    "posted_at": posted_at,
                     "content": text,
                     "likes": likes,
                     "retweets": retweets,

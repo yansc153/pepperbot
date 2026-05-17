@@ -1,10 +1,12 @@
 """
-Self-learning module.
-Two sub-loops:
-  3A: Own post analysis → attribute performance to techniques → adjust weights
-  3B: KOL viral post extraction → learn narrative techniques → feed to writer
+Learning module for the posting-only system.
 
-No learning boundaries. AI makes ALL strategy decisions.
+Two loops:
+  1. observe KOL reactions as read-only external signal
+  2. review our own published posts and extract writing hypotheses
+
+This module does not auto-like, auto-comment, auto-follow, or auto-adjust
+strategy weights in the default runtime path.
 """
 
 import json
@@ -15,272 +17,294 @@ from llm import call_claude_json
 from database import (
     get_connection,
     get_recent_posts,
-    update_post_metrics,
-    save_strategy_weights,
-    get_latest_weights,
-    insert_technique,
-    get_all_techniques,
+    insert_learning_log,
+    insert_reaction_observation,
+    get_recent_reaction_observations,
     update_circuit_breaker,
     get_circuit_breaker,
 )
 from config import (
-    DEFAULT_WEIGHTS,
-    VIRAL_THRESHOLD_LIKES,
-    VIRAL_THRESHOLD_RETWEETS,
     CIRCUIT_BREAKER_THRESHOLD,
-    MEMORY_PATH,
+    KOL_LIST_URL,
 )
-from scraper import KOLPost
 
 logger = logging.getLogger(__name__)
 
+REACTION_PACK_PROMPT = """你是一个 reaction-learning 蒸馏器。
 
-# ── 3A: Own Post Analysis ──
+目标不是复述 KOL 的内容，而是提取他们如何反应一条 AI 新闻：
+- 从什么角度切
+- 开头是怎么让人停下来的
+- 哪种惊讶/质疑/判断方式最有效
+- 哪些表达已经同质化，不能再学
 
-ANALYSIS_SYSTEM_PROMPT = """你是 @pepperfr1ends 的数据分析师，负责分析帖子表现并归因。
+严格要求：
+1. 只提炼“反应结构”，不要复制原句
+2. 如果样本和新闻不相关，要明确排除
+3. 输出能直接给写作者使用的 reaction pack
+4. 不要把账号写成 KOL 摘要号
 
-输入：一组帖子及其互动数据。
-任务：
-1. 识别表现最好和最差的帖子
-2. 归因分析：哪些写作技法/话题/钩子带来了高互动
-3. 提出策略调整建议（内容比例、话题方向、语气调整）
-
-当前内容比例权重：
-- ai_hot_take: AI热点快评
-- ai_tool_review: AI工具实测
-- startup_cognition: 创业认知
-- controversy: 争议观点
-- kol_interaction: KOL互动
-
-你可以自由调整任何权重。没有调整幅度限制。
-如果某类内容完全不行，可以把权重压到0.05。
-如果某类内容爆了，可以把权重拉到0.50。
-大胆决策，用数据说话。
-
-输出JSON：
+输出 JSON：
 {
-  "best_post_id": <int>,
-  "worst_post_id": <int>,
-  "best_post_analysis": "<为什么好>",
-  "worst_post_analysis": "<为什么差>",
-  "techniques_identified": ["<技法1>", "<技法2>"],
-  "new_weights": {
-    "ai_hot_take": <float>,
-    "ai_tool_review": <float>,
-    "startup_cognition": <float>,
-    "controversy": <float>,
-    "kol_interaction": <float>
-  },
-  "weight_reasoning": "<为什么这样调>",
-  "topic_suggestions": ["<明天应该多写什么>"],
-  "tone_adjustment": "<语气方向建议>"
+  "status": "ok" | "no_recent_reactions" | "low_signal",
+  "relevant_count": <int>,
+  "what_everyone_noticed": ["<事实或变化点>"],
+  "angle_patterns": ["<大家常见的切入角度>"],
+  "hook_patterns": ["<适合第一行的钩子方式>"],
+  "surprise_patterns": ["<惊讶/反常识/质疑手法>"],
+  "avoid_patterns": ["<已经同质化或不该学的写法>"],
+  "underused_angle": "<可写但大家没写透的角度>",
+  "suggested_stance": "<适合花椒账号的明确立场>",
+  "freshness_note": "<现在适合快评/跟进/复盘哪一种>",
+  "writer_notes": ["<给 writer 的直接建议>"]
+}
+"""
+
+POST_REVIEW_PROMPT = """你是 @pepperfr1ends 的发帖复盘分析师。
+
+你只能根据本账号已经发布帖子的真实表现做复盘，不要编造 KOL 信号，
+也不要自动修改任何策略权重。
+
+输出 JSON：
+{
+  "status": "ok" | "insufficient_data",
+  "best_post_id": <int|null>,
+  "worst_post_id": <int|null>,
+  "winning_patterns": ["<表现好的结构或切法>"],
+  "losing_patterns": ["<表现差的结构或切法>"],
+  "next_writing_hypotheses": ["<下一轮可验证假设>"],
+  "human_calibration_notes": ["<去模板感建议>"],
+  "review_summary": "<一句话总结>"
 }
 """
 
 
-async def analyze_own_posts() -> dict | None:
+async def observe_kol_reactions(bot, max_posts: int = 30) -> int:
     """
-    Loop 3A: Analyze recent posts, attribute performance, adjust strategy.
-    Returns analysis dict or None on failure.
+    Continuously collect KOL list reactions as raw read-only observations.
+    Returns the number of newly inserted observations.
+    """
+    raw_posts = await bot.scrape_list_by_url(KOL_LIST_URL, max_posts=max_posts)
+    if not raw_posts:
+        logger.info("No KOL reactions scraped from list")
+        return 0
+
+    conn = get_connection()
+    inserted = 0
+    try:
+        for post in raw_posts:
+            post_url = post.get("post_url", "")
+            post_text = post.get("content", "").strip()
+            if not post_url or not post_text:
+                continue
+
+            row_id = insert_reaction_observation(
+                conn=conn,
+                kol_handle=post.get("handle", ""),
+                post_url=post_url,
+                post_text=post_text,
+                posted_at=post.get("posted_at", ""),
+                likes=post.get("likes", 0),
+                retweets=post.get("retweets", 0),
+                replies=post.get("replies", 0),
+            )
+            if row_id:
+                inserted += 1
+    finally:
+        conn.close()
+
+    logger.info("Observed %d new KOL reactions", inserted)
+    return inserted
+
+
+def _format_reaction_samples(samples: list[dict], limit: int = 12) -> str:
+    lines = []
+    for sample in samples[:limit]:
+        lines.append(
+            f"- {sample.get('kol_handle', '')} | "
+            f"{sample.get('likes', 0)} likes / {sample.get('retweets', 0)} RT / "
+            f"{sample.get('replies', 0)} replies | "
+            f"{sample.get('post_text', '')[:240]}"
+        )
+    return "\n".join(lines)
+
+
+async def build_reaction_pack(
+    source_material: str,
+    source_url: str = "",
+    source_title: str = "",
+    since_hours: int = 8,
+) -> dict:
+    """
+    Distill recent raw reactions into a writer-friendly reaction pack.
+    The model decides which samples are relevant to the current source.
+    """
+    conn = get_connection()
+    samples = get_recent_reaction_observations(conn, since_hours=since_hours, limit=60)
+    conn.close()
+
+    if not samples:
+        return {
+            "status": "no_recent_reactions",
+            "relevant_count": 0,
+            "what_everyone_noticed": [],
+            "angle_patterns": [],
+            "hook_patterns": [],
+            "surprise_patterns": [],
+            "avoid_patterns": [],
+            "underused_angle": "",
+            "suggested_stance": "",
+            "freshness_note": "",
+            "writer_notes": [],
+        }
+
+    user_prompt = f"""请围绕这条 AI 新闻蒸馏最近 KOL 反应。
+
+## 新闻素材
+标题: {source_title}
+来源: {source_url}
+{source_material[:1600]}
+
+## 最近 KOL 反应样本
+{_format_reaction_samples(samples)}
+
+注意：
+- 只保留和这条新闻相关的反应
+- 学“怎么反应”，不是学“具体怎么写”
+- 要指出哪些写法已经太像 KOL 了，不能再学
+"""
+
+    try:
+        result = await call_claude_json(
+            system_prompt=REACTION_PACK_PROMPT,
+            user_prompt=user_prompt,
+            max_tokens=900,
+            temperature=0.3,
+        )
+        result.setdefault("status", "ok")
+        result.setdefault("relevant_count", 0)
+        result.setdefault("what_everyone_noticed", [])
+        result.setdefault("angle_patterns", [])
+        result.setdefault("hook_patterns", [])
+        result.setdefault("surprise_patterns", [])
+        result.setdefault("avoid_patterns", [])
+        result.setdefault("underused_angle", "")
+        result.setdefault("suggested_stance", "")
+        result.setdefault("freshness_note", "")
+        result.setdefault("writer_notes", [])
+        return result
+    except Exception as exc:
+        logger.warning("Reaction pack distillation failed: %s", exc)
+        return {
+            "status": "low_signal",
+            "relevant_count": 0,
+            "what_everyone_noticed": [],
+            "angle_patterns": [],
+            "hook_patterns": [],
+            "surprise_patterns": [],
+            "avoid_patterns": ["reaction_pack_error"],
+            "underused_angle": "",
+            "suggested_stance": "",
+            "freshness_note": "",
+            "writer_notes": [],
+        }
+
+
+async def analyze_own_posts() -> dict:
+    """
+    Review published post performance and extract the next writing hypotheses.
+    This does not mutate strategy weights in the default runtime path.
     """
     conn = get_connection()
     posts = get_recent_posts(conn, limit=30)
-    current_weights = get_latest_weights(conn)
-    if not current_weights:
-        current_weights = DEFAULT_WEIGHTS.as_dict()
-
-    if not posts:
-        logger.info("No posts to analyze")
-        conn.close()
-        return None
-
-    # Filter to posts that have been published and have metrics
     published = [p for p in posts if p.get("published_at")]
-    if len(published) < 3:
-        logger.info("Too few published posts for analysis: %d", len(published))
-        conn.close()
-        return None
 
-    # Build analysis input
+    if len(published) < 3:
+        conn.close()
+        return {
+            "status": "insufficient_data",
+            "best_post_id": None,
+            "worst_post_id": None,
+            "winning_patterns": [],
+            "losing_patterns": [],
+            "next_writing_hypotheses": [],
+            "human_calibration_notes": [],
+            "review_summary": "insufficient_data",
+        }
+
     posts_summary = []
-    for p in published[:20]:
+    for post in published[:20]:
         posts_summary.append({
-            "id": p["id"],
-            "type": p["content_type"],
-            "content": p["content"][:150],
-            "likes": p.get("likes", 0),
-            "retweets": p.get("retweets", 0),
-            "replies": p.get("replies", 0),
-            "impressions": p.get("impressions", 0),
-            "score_total": p.get("score_total", 0),
+            "id": post["id"],
+            "type": post["content_type"],
+            "content": post["content"][:160],
+            "likes": post.get("likes", 0),
+            "retweets": post.get("retweets", 0),
+            "replies": post.get("replies", 0),
+            "impressions": post.get("impressions", 0),
+            "score_total": post.get("score_total", 0),
         })
 
-    user_prompt = f"""请分析以下帖子数据并提出策略调整：
+    user_prompt = f"""请复盘以下本账号帖子表现，只输出下一轮可执行的写作建议。
 
-当前权重：{json.dumps(current_weights, ensure_ascii=False)}
-
-帖子数据（最近20条）：
+帖子数据：
 {json.dumps(posts_summary, ensure_ascii=False, indent=2)}
-
-基于数据表现，给出归因分析和新的权重建议。大胆调整，不要保守。"""
+"""
 
     try:
         analysis = await call_claude_json(
-            system_prompt=ANALYSIS_SYSTEM_PROMPT,
+            system_prompt=POST_REVIEW_PROMPT,
             user_prompt=user_prompt,
-            max_tokens=1200,
+            max_tokens=1000,
             temperature=0.3,
         )
-
-        # Validate and apply new weights
-        new_weights = analysis.get("new_weights", {})
-        if new_weights:
-            # Ensure all keys present
-            for key in ["ai_hot_take", "ai_tool_review", "startup_cognition",
-                        "controversy", "kol_interaction"]:
-                if key not in new_weights:
-                    new_weights[key] = current_weights.get(key, 0.2)
-
-            # Normalize to sum to 1.0
-            total = sum(new_weights.values())
-            if total > 0:
-                new_weights = {k: v / total for k, v in new_weights.items()}
-
-            # Clamp: no weight below 0.05 (so nothing is truly killed)
-            for key in new_weights:
-                new_weights[key] = max(0.05, new_weights[key])
-            # Re-normalize
-            total = sum(new_weights.values())
-            new_weights = {k: v / total for k, v in new_weights.items()}
-
-            # Save to database
-            save_strategy_weights(
-                conn, new_weights,
-                reason=analysis.get("weight_reasoning", "auto_analysis"),
-            )
-            logger.info("Weights updated: %s", new_weights)
-
-        # Update MEMORY.md
-        _append_to_memory(
-            f"策略调整：{analysis.get('weight_reasoning', 'N/A')}",
-            section="策略权重变更记录",
-        )
-
-        conn.close()
-        return analysis
-
     except Exception as exc:
-        logger.error("Own post analysis failed: %s", exc)
+        logger.error("Own post review failed: %s", exc)
         conn.close()
-        return None
+        return {
+            "status": "insufficient_data",
+            "best_post_id": None,
+            "worst_post_id": None,
+            "winning_patterns": [],
+            "losing_patterns": [],
+            "next_writing_hypotheses": [],
+            "human_calibration_notes": [],
+            "review_summary": f"review_error: {exc}",
+        }
 
+    analysis.setdefault("status", "ok")
+    analysis.setdefault("best_post_id", None)
+    analysis.setdefault("worst_post_id", None)
+    analysis.setdefault("winning_patterns", [])
+    analysis.setdefault("losing_patterns", [])
+    analysis.setdefault("next_writing_hypotheses", [])
+    analysis.setdefault("human_calibration_notes", [])
+    analysis.setdefault("review_summary", "")
 
-# ── 3B: KOL Viral Learning ──
-
-KOL_LEARNING_PROMPT = """你是写作技法分析师。分析一条爆款帖子的叙事和写作手法。
-
-提取：
-1. 使用了哪些写作技法（钩子、节奏、收尾、情绪调动）
-2. 为什么这个技法在这个话题上有效
-3. 如何将这个技法迁移到 AI/创业 话题
-
-输出JSON：
-{
-  "techniques": [
-    {
-      "name": "<技法名>",
-      "description": "<怎么用>",
-      "why_effective": "<为什么有效>",
-      "migration_tip": "<如何迁移到AI/创业话题>"
-    }
-  ],
-  "overall_pattern": "<整体模式总结>",
-  "transferable_score": <1-10, 越高越容易迁移到AI/OPC内容>
-}
-"""
-
-
-async def learn_from_kol_viral(viral_posts: list[KOLPost]) -> list[dict]:
-    """
-    Loop 3B: Extract writing techniques from viral KOL posts.
-    Stores learned techniques in technique_library.
-    Returns list of newly learned techniques.
-    """
-    if not viral_posts:
-        return []
-
-    conn = get_connection()
-    new_techniques = []
-
-    for post in viral_posts[:5]:  # analyze top 5 viral posts max
-        user_prompt = f"""分析这条爆款帖子的写作技法：
-
-KOL: {post.handle}
-互动数据: {post.likes} likes / {post.retweets} retweets / {post.replies} replies
-
-帖子内容：
-{post.content}
-
-提取可复用的写作技法。"""
-
-        try:
-            result = await call_claude_json(
-                system_prompt=KOL_LEARNING_PROMPT,
-                user_prompt=user_prompt,
-                max_tokens=800,
-                temperature=0.3,
-            )
-
-            techniques = result.get("techniques", [])
-            transferable = result.get("transferable_score", 5)
-
-            # Only save techniques with high transferability
-            if transferable >= 6:
-                for tech in techniques:
-                    tech_id = insert_technique(
-                        conn=conn,
-                        technique_name=tech.get("name", "unknown"),
-                        description=tech.get("description", ""),
-                        example_text=post.content[:200],
-                        source_kol=post.handle,
-                        source_url=post.post_url,
-                    )
-                    new_techniques.append({
-                        "id": tech_id,
-                        "technique_name": tech.get("name", ""),
-                        "description": tech.get("description", ""),
-                        "source_kol": post.handle,
-                    })
-                    logger.info(
-                        "Learned technique '%s' from %s",
-                        tech.get("name", ""), post.handle,
-                    )
-
-        except Exception as exc:
-            logger.warning("KOL learning failed for %s: %s", post.handle, exc)
-            continue
-
-    # Update MEMORY.md
-    if new_techniques:
-        tech_names = [t["technique_name"] for t in new_techniques]
-        _append_to_memory(
-            f"从KOL爆款学到新技法：{', '.join(tech_names)}",
-            section="最佳实践",
-        )
-
+    insert_learning_log(
+        conn=conn,
+        learning_type="post_review_summary",
+        techniques_extracted=json.dumps(analysis.get("winning_patterns", []), ensure_ascii=False),
+        strategy_adjustment=json.dumps(
+            {
+                "losing_patterns": analysis.get("losing_patterns", []),
+                "next_writing_hypotheses": analysis.get("next_writing_hypotheses", []),
+                "human_calibration_notes": analysis.get("human_calibration_notes", []),
+                "review_summary": analysis.get("review_summary", ""),
+            },
+            ensure_ascii=False,
+        ),
+    )
     conn.close()
-    return new_techniques
+    return analysis
 
-
-# ── Circuit Breaker ──
 
 async def check_circuit_breaker() -> bool:
     """
     Check if system should pause.
     Returns True if paused (should not post).
     Triggers:
-    - 5 consecutive posts with 0 interactions
-    - Twitter rate limit / ban detected
+    - consecutive posts with 0 interactions
     """
     conn = get_connection()
     cb = get_circuit_breaker(conn)
@@ -290,7 +314,6 @@ async def check_circuit_breaker() -> bool:
         conn.close()
         return True
 
-    # Check recent posts for consecutive 0-interaction
     posts = get_recent_posts(conn, limit=CIRCUIT_BREAKER_THRESHOLD)
     consecutive_zeros = 0
 
@@ -312,10 +335,6 @@ async def check_circuit_breaker() -> bool:
             consecutive_zeros,
         )
         update_circuit_breaker(conn, consecutive_zeros, is_paused=True)
-        _append_to_memory(
-            f"CIRCUIT BREAKER触发：连续{consecutive_zeros}条0互动帖子，系统暂停",
-            section="已知坑",
-        )
         conn.close()
         return True
 
@@ -332,33 +351,9 @@ async def reset_circuit_breaker() -> None:
     logger.info("Circuit breaker reset")
 
 
-# ── Memory management ──
-
-def _append_to_memory(entry: str, section: str = "最佳实践") -> None:
-    """Append a dated entry to MEMORY.md under the given section."""
-    today = datetime.now().strftime("%Y-%m-%d")
-    entry_line = f"\n- [{today}] {entry}"
-
-    try:
-        content = MEMORY_PATH.read_text(encoding="utf-8") if MEMORY_PATH.exists() else ""
-        if section in content:
-            # Insert after section header
-            parts = content.split(f"## {section}")
-            if len(parts) == 2:
-                content = f"{parts[0]}## {section}{entry_line}{parts[1]}"
-            else:
-                content += f"\n\n## {section}{entry_line}"
-        else:
-            content += f"\n\n## {section}{entry_line}"
-
-        MEMORY_PATH.write_text(content, encoding="utf-8")
-    except Exception as exc:
-        logger.warning("Failed to update MEMORY.md: %s", exc)
-
-
 def get_learned_techniques() -> list[dict]:
-    """Get all learned techniques for feeding into writer."""
-    conn = get_connection()
-    techniques = get_all_techniques(conn)
-    conn.close()
-    return techniques
+    """
+    Legacy compatibility shim.
+    The posting-only runtime no longer feeds KOL viral techniques into writer.
+    """
+    return []

@@ -39,13 +39,15 @@ RUN playwright install chromium --with-deps
 COPY . .
 
 # Cron jobs — times are UTC
+# observe every 2 hours for continuous KOL reaction collection
 # slot1 07:00 CST = 23:00 UTC
-# slot2 12:00 CST = 04:00 UTC
+# slot2 11:00 CST = 03:00 UTC
 # slot3 16:00 CST = 08:00 UTC
 # slot4 20:00 CST = 12:00 UTC
 # slot5 23:00 CST = 15:00 UTC
 # review 00:00 CST = 16:00 UTC
 RUN echo '0 23 * * * root /app/scripts/run_slot_vps.sh slot1 >> /app/logs/slot1.log 2>&1\n\
+0 */2 * * * root /app/scripts/run_slot_vps.sh observe >> /app/logs/observe.log 2>&1\n\
 0 3  * * * root /app/scripts/run_slot_vps.sh slot2 >> /app/logs/slot2.log 2>&1\n\
 0 8  * * * root /app/scripts/run_slot_vps.sh slot3 >> /app/logs/slot3.log 2>&1\n\
 0 12 * * * root /app/scripts/run_slot_vps.sh slot4 >> /app/logs/slot4.log 2>&1\n\

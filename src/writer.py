@@ -5,7 +5,6 @@ LLM writes; guardrails.py validates; loop until clean or max retries.
 """
 
 import logging
-import json
 from pathlib import Path
 
 from llm import call_claude, call_claude_json
@@ -23,6 +22,7 @@ from config import (
 logger = logging.getLogger(__name__)
 
 MAX_REWRITE_ATTEMPTS = 3
+HUMAN_TEXT_PRIOR_ROOT = Path(__file__).resolve().parent.parent / "skills" / "human-text-prior" / "references"
 
 
 def _load_file(path: Path) -> str:
@@ -35,7 +35,7 @@ def _load_file(path: Path) -> str:
 
 def _build_writer_system_prompt(
     content_type: str,
-    techniques: list[dict] | None = None,
+    reaction_pack: dict | None = None,
 ) -> str:
     """Build the full system prompt for the writer LLM call."""
     persona = _load_file(PERSONA_PATH)
@@ -44,21 +44,25 @@ def _build_writer_system_prompt(
     hooks = _load_file(HOOKS_PATH)
     template = _load_file(TEMPLATE_AI_PATH)
 
-    technique_block = ""
-    if techniques:
-        technique_block = "\n\n## 从爆款帖子中学到的写作技法\n"
-        for tech in techniques[:5]:
-            technique_block += f"- {tech['technique_name']}: {tech['description']}\n"
+    reaction_block = ""
+    if reaction_pack and reaction_pack.get("status") == "ok":
+        reaction_block = f"""
+
+## reaction pack（只学反应结构 不学原句）
+- 大家都在注意：{", ".join(reaction_pack.get("what_everyone_noticed", [])[:4])}
+- 常见切角：{", ".join(reaction_pack.get("angle_patterns", [])[:4])}
+- 常见钩子：{", ".join(reaction_pack.get("hook_patterns", [])[:4])}
+- 可用惊讶手法：{", ".join(reaction_pack.get("surprise_patterns", [])[:4])}
+- 不能学的写法：{", ".join(reaction_pack.get("avoid_patterns", [])[:4])}
+- 还没被写透的角度：{reaction_pack.get("underused_angle", "")}
+- 适合本账号的立场：{reaction_pack.get("suggested_stance", "")}
+- 时效提醒：{reaction_pack.get("freshness_note", "")}
+- 给 writer 的提醒：{", ".join(reaction_pack.get("writer_notes", [])[:4])}
+"""
+
+    human_prior_block = _build_human_prior_block()
 
     return f"""你是 @pepperfr1ends（花椒），一个 AI/OPC 创业者的 Twitter 账号。
-
-## 必须使用的俚语/口语词（每条推文至少用 1-2 个）
-从这些词里自然地挑：
-玩出花来了、玩明白了、折腾、不用折腾了、闷声发大财、拼凑、糊了一个、
-一口气放出来了、纯纯的、属于是、脑子瓦特了、上头了、整活、搞事情、
-离谱、炸了、跑通了、跑废了、真香、GG了、凉了、直接起飞、直接拉满、
-没跑了、妥妥的、嘎嘎好、草、严重的、卖课的、卖流量的、
-tokenmaxxing、vibe coding、卷起来了、打起来了
 
 ## 人设核心
 {persona[:1500]}
@@ -74,7 +78,10 @@ tokenmaxxing、vibe coding、卷起来了、打起来了
 
 ## 内容模板（{content_type}）
 {template[:1000]}
-{technique_block}
+{reaction_block}
+
+## human-text-prior 结构校准
+{human_prior_block}
 
 ## 硬性排版规则（违反任何一条 = 重写）
 1. 一句话一行。每个完整意思独占一行
@@ -86,14 +93,14 @@ tokenmaxxing、vibe coding、卷起来了、打起来了
 ## 硬性内容规则
 6. 每条推文 ≤ {MAX_TWEET_LENGTH} 字
 7. 第一行 ≤ 20 字
-8. 必须有坚定立场
+8. 必须有明确取向，但不要每条都写成暴论模板
 9. 不用破折号 ——
 10. 不用排比句
 11. 不用「赋能/格局/综上所述/建议大家/你怎么看」
 12. 不出现源帖元词（原帖/原话/这帖/文章里/据XX报道）
 13. emoji ≤ 2个，🔥🚀📈📉 不用
 14. 主语用「我」不用「我们」
-15. 收尾用暴论/定心丸/悬念 不用设问。收尾要有力量 例：「买就对了 你怕啥」「差距在拉大」
+15. 收尾要落地，可以收住，不必强行喊口号或暴论
 16. 不强行把每个话题都拉到 OPC/一人公司叙事。话题本身够硬就直接说
 17. 不写元评论（「这条消息的重点不是X而是Y」）直接说内容
 18. 必须包含配图建议
@@ -108,11 +115,50 @@ tokenmaxxing、vibe coding、卷起来了、打起来了
 """
 
 
+def _build_human_prior_block() -> str:
+    """Load a compact human-text-prior handoff for structural calibration."""
+    integration = _load_file(HUMAN_TEXT_PRIOR_ROOT / "integration-contract.md")
+    human_core = _load_file(HUMAN_TEXT_PRIOR_ROOT / "human-core.md")
+    news_rewrite = _load_file(HUMAN_TEXT_PRIOR_ROOT / "news-rewrite.md")
+
+    keep = [
+        "Lead with the take, not the full background",
+        "Keep one sentence visibly plainer than the others",
+        "Preserve technical accuracy and all source facts",
+        "Use reaction to sharpen the post, not to replace the facts",
+    ]
+    avoid = [
+        "Thesis-essay scaffolding",
+        "Over-symmetry",
+        "Fake all-sides neutrality",
+        "Forced slang or mandatory hot-take endings",
+    ]
+    cadence = [
+        "Short opening, medium explanation, short landing",
+        "Let one sentence carry the reaction instead of making every sentence perform",
+        "Assume the audience already knows the broad AI topic category",
+    ]
+
+    return "\n".join(
+        [
+            "human_prior_level: natural-human",
+            "keep:",
+            *[f"- {item}" for item in keep],
+            "avoid:",
+            *[f"- {item}" for item in avoid],
+            "cadence_notes:",
+            *[f"- {item}" for item in cadence],
+            "fact_rule: humanize the delivery, not the facts",
+            f"references: integration={bool(integration)}, core={bool(human_core)}, news={bool(news_rewrite)}",
+        ]
+    )
+
+
 async def write_tweet(
     content_type: str,
     source_material: str = "",
     extra_context: str = "",
-    techniques: list[dict] | None = None,
+    reaction_pack: dict | None = None,
 ) -> dict | None:
     """
     Generate a single tweet.
@@ -120,7 +166,7 @@ async def write_tweet(
     Returns dict with tweet, image_prompt, hook_used, self_eval.
     Returns None if all attempts fail.
     """
-    system_prompt = _build_writer_system_prompt(content_type, techniques)
+    system_prompt = _build_writer_system_prompt(content_type, reaction_pack)
 
     if source_material:
         user_prompt = f"""你收到了一条 {content_type} 类型的AI资讯素材，请把它改写成花椒的推文。
@@ -133,11 +179,12 @@ async def write_tweet(
 2. 加入自己的立场判断（看好/看衰/矛盾点在哪）
 3. 如果有数据就用数据说话
 4. 每条推文必须配图建议（描述图片内容，方便后续使用原文配图或生成图）
+5. 可以学习别人的反应结构，但不要复用他们的原句或固定话术
 {f"5. 额外上下文：{extra_context}" if extra_context else ""}"""
     else:
         user_prompt = f"""自由发挥，写一条 {content_type} 类型的AI/创业观点推文。
 
-要有立场、有数字、有态度。不要温吞水。
+要有取向、有数字、有态度，但不要像模板化暴论机器。
 {f"额外上下文：{extra_context}" if extra_context else ""}"""
 
     for attempt in range(MAX_REWRITE_ATTEMPTS):

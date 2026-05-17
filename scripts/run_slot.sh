@@ -5,8 +5,9 @@
 #
 # Crontab (Asia/Shanghai):
 #   CRON_TZ=Asia/Shanghai
+#   0 */2 * * *  /opt/pepperbot/scripts/run_slot.sh observe
 #   0  7 * * *  /opt/pepperbot/scripts/run_slot.sh slot1
-#   0 12 * * *  /opt/pepperbot/scripts/run_slot.sh slot2
+#   0 11 * * *  /opt/pepperbot/scripts/run_slot.sh slot2
 #   0 16 * * *  /opt/pepperbot/scripts/run_slot.sh slot3
 #   0 20 * * *  /opt/pepperbot/scripts/run_slot.sh slot4
 #   0 23 * * *  /opt/pepperbot/scripts/run_slot.sh slot5
