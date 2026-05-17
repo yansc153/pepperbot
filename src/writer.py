@@ -12,7 +12,6 @@ from guardrails import run_all_guardrails, has_kill_violation, SlopSeverity
 from config import (
     VOICE_PROFILE_PATH,
     VOICE_RULES_PATH,
-    AVOID_SLOP_PATH,
     HOOKS_PATH,
     TEMPLATE_AI_PATH,
     PERSONA_PATH,
@@ -24,6 +23,51 @@ logger = logging.getLogger(__name__)
 MAX_REWRITE_ATTEMPTS = 3
 HUMAN_TEXT_PRIOR_ROOT = Path(__file__).resolve().parent.parent / "skills" / "human-text-prior" / "references"
 
+FACT_SPINE_PROMPT = """你是新闻事实提炼器。
+
+任务：把输入新闻压成硬事实骨架，不写观点，不下判断，不做意义拔高。
+
+输出 JSON：
+{
+  "fact_spine": ["<事实1>", "<事实2>", "<事实3>"],
+  "most_telling_fact": "<最值得盯的一条事实>",
+  "image_anchor": "<最适合作为配图依据的对象或画面>",
+  "uncertainty": "<还不确定的部分，没有就写none>"
+}
+"""
+
+ANGLE_CARD_PROMPT = """你是社交写作者的角度编辑。
+
+你要根据事实骨架和 reaction pack，先决定这条推文怎么反应，再交给写手去写。
+不要直接写完整推文。
+
+输出 JSON：
+{
+  "posture": "<quick_judgment|follow_up|reverse_angle|measured_take>",
+  "stance": "<明确取向>",
+  "hook_style": "<开头怎么切>",
+  "surprise_move": "<反差/惊讶/质疑点>",
+  "supporting_move": "<正文怎么承接>",
+  "ending_style": "<怎么落地收住>",
+  "avoid": ["<不要写成什么样>"],
+  "writer_brief": "<给写手的一句话 brief>"
+}
+"""
+
+ANTI_TEMPLATE_AUDIT_PROMPT = """你是中文社交文案审稿人。
+
+检查这条推文是不是太像 AI 总结腔、KOL 模板腔、或者“为了发帖而发帖”。
+不要改事实，只找最需要改的 1-3 处。
+
+输出 JSON：
+{
+  "verdict": "pass" | "needs_rewrite",
+  "why_it_reads_ai": ["<问题1>", "<问题2>"],
+  "surgical_fixes": ["<局部改法1>", "<局部改法2>"],
+  "rewrite_focus": "<优先改第一行/最后一行/最模板的那句>"
+}
+"""
+
 
 def _load_file(path: Path) -> str:
     """Load a markdown file as string."""
@@ -31,6 +75,10 @@ def _load_file(path: Path) -> str:
         return path.read_text(encoding="utf-8")
     logger.warning("File not found: %s", path)
     return ""
+
+
+def _join_brief(items: list[str], limit: int = 4) -> str:
+    return "；".join(item for item in items[:limit] if item)
 
 
 def _build_writer_system_prompt(
@@ -49,15 +97,15 @@ def _build_writer_system_prompt(
         reaction_block = f"""
 
 ## reaction pack（只学反应结构 不学原句）
-- 大家都在注意：{", ".join(reaction_pack.get("what_everyone_noticed", [])[:4])}
-- 常见切角：{", ".join(reaction_pack.get("angle_patterns", [])[:4])}
-- 常见钩子：{", ".join(reaction_pack.get("hook_patterns", [])[:4])}
-- 可用惊讶手法：{", ".join(reaction_pack.get("surprise_patterns", [])[:4])}
-- 不能学的写法：{", ".join(reaction_pack.get("avoid_patterns", [])[:4])}
+- 大家都在注意：{_join_brief(reaction_pack.get("what_everyone_noticed", []))}
+- 常见切角：{_join_brief(reaction_pack.get("angle_patterns", []))}
+- 常见钩子：{_join_brief(reaction_pack.get("hook_patterns", []))}
+- 可用惊讶手法：{_join_brief(reaction_pack.get("surprise_patterns", []))}
+- 不能学的写法：{_join_brief(reaction_pack.get("avoid_patterns", []))}
 - 还没被写透的角度：{reaction_pack.get("underused_angle", "")}
 - 适合本账号的立场：{reaction_pack.get("suggested_stance", "")}
 - 时效提醒：{reaction_pack.get("freshness_note", "")}
-- 给 writer 的提醒：{", ".join(reaction_pack.get("writer_notes", [])[:4])}
+- 给 writer 的提醒：{_join_brief(reaction_pack.get("writer_notes", []))}
 """
 
     human_prior_block = _build_human_prior_block()
@@ -154,6 +202,92 @@ def _build_human_prior_block() -> str:
     )
 
 
+async def _build_fact_spine(source_material: str) -> dict:
+    if not source_material.strip():
+        return {
+            "fact_spine": [],
+            "most_telling_fact": "",
+            "image_anchor": "",
+            "uncertainty": "none",
+        }
+
+    result = await call_claude_json(
+        system_prompt=FACT_SPINE_PROMPT,
+        user_prompt=f"请提炼这条新闻素材：\n\n{source_material[:1800]}",
+        max_tokens=500,
+        temperature=0.2,
+    )
+    result.setdefault("fact_spine", [])
+    result.setdefault("most_telling_fact", "")
+    result.setdefault("image_anchor", "")
+    result.setdefault("uncertainty", "none")
+    return result
+
+
+async def _build_angle_card(
+    content_type: str,
+    fact_spine: dict,
+    reaction_pack: dict | None = None,
+    extra_context: str = "",
+) -> dict:
+    reaction_summary = "无 recent reaction pack"
+    if reaction_pack:
+        reaction_summary = (
+            f"大家都在注意: {_join_brief(reaction_pack.get('what_everyone_noticed', []))}\n"
+            f"常见切角: {_join_brief(reaction_pack.get('angle_patterns', []))}\n"
+            f"常见钩子: {_join_brief(reaction_pack.get('hook_patterns', []))}\n"
+            f"惊讶手法: {_join_brief(reaction_pack.get('surprise_patterns', []))}\n"
+            f"不要学: {_join_brief(reaction_pack.get('avoid_patterns', []))}\n"
+            f"时效提醒: {reaction_pack.get('freshness_note', '')}\n"
+            f"建议立场: {reaction_pack.get('suggested_stance', '')}"
+        )
+
+    result = await call_claude_json(
+        system_prompt=ANGLE_CARD_PROMPT,
+        user_prompt=(
+            f"内容类型: {content_type}\n\n"
+            f"事实骨架:\n{_join_brief(fact_spine.get('fact_spine', []), limit=6)}\n"
+            f"最值得看的事实: {fact_spine.get('most_telling_fact', '')}\n"
+            f"反应摘要:\n{reaction_summary}\n"
+            f"{'额外上下文: ' + extra_context if extra_context else ''}"
+        ),
+        max_tokens=500,
+        temperature=0.4,
+    )
+    result.setdefault("posture", "quick_judgment")
+    result.setdefault("stance", "")
+    result.setdefault("hook_style", "")
+    result.setdefault("surprise_move", "")
+    result.setdefault("supporting_move", "")
+    result.setdefault("ending_style", "")
+    result.setdefault("avoid", [])
+    result.setdefault("writer_brief", "")
+    return result
+
+
+async def _audit_draft(
+    tweet_text: str,
+    fact_spine: dict,
+    angle_card: dict,
+) -> dict:
+    result = await call_claude_json(
+        system_prompt=ANTI_TEMPLATE_AUDIT_PROMPT,
+        user_prompt=(
+            f"事实骨架: {_join_brief(fact_spine.get('fact_spine', []), limit=6)}\n"
+            f"角度卡: stance={angle_card.get('stance', '')}; hook={angle_card.get('hook_style', '')}; "
+            f"surprise={angle_card.get('surprise_move', '')}\n\n"
+            f"待审推文:\n{tweet_text}"
+        ),
+        max_tokens=400,
+        temperature=0.2,
+    )
+    result.setdefault("verdict", "pass")
+    result.setdefault("why_it_reads_ai", [])
+    result.setdefault("surgical_fixes", [])
+    result.setdefault("rewrite_focus", "")
+    return result
+
+
 async def write_tweet(
     content_type: str,
     source_material: str = "",
@@ -162,11 +296,37 @@ async def write_tweet(
 ) -> dict | None:
     """
     Generate a single tweet.
-    Runs guardrail loop: write → check → rewrite if needed.
+    Runs a structured loop:
+    facts -> angle -> draft -> anti-template audit -> guardrails.
     Returns dict with tweet, image_prompt, hook_used, self_eval.
     Returns None if all attempts fail.
     """
     system_prompt = _build_writer_system_prompt(content_type, reaction_pack)
+    try:
+        fact_spine = await _build_fact_spine(source_material)
+    except Exception as exc:
+        logger.warning("Fact spine build failed, falling back to source material: %s", exc)
+        fact_spine = {
+            "fact_spine": [],
+            "most_telling_fact": "",
+            "image_anchor": "",
+            "uncertainty": "none",
+        }
+
+    try:
+        angle_card = await _build_angle_card(content_type, fact_spine, reaction_pack, extra_context)
+    except Exception as exc:
+        logger.warning("Angle card build failed, falling back to direct draft: %s", exc)
+        angle_card = {
+            "posture": "quick_judgment",
+            "stance": "",
+            "hook_style": "",
+            "surprise_move": "",
+            "supporting_move": "",
+            "ending_style": "",
+            "avoid": [],
+            "writer_brief": "",
+        }
 
     if source_material:
         user_prompt = f"""你收到了一条 {content_type} 类型的AI资讯素材，请把它改写成花椒的推文。
@@ -174,17 +334,41 @@ async def write_tweet(
 ## 原始素材
 {source_material[:1200]}
 
+## 事实骨架
+{chr(10).join(f"- {item}" for item in fact_spine.get("fact_spine", [])[:6])}
+
+## angle card
+- posture: {angle_card.get("posture", "")}
+- stance: {angle_card.get("stance", "")}
+- hook_style: {angle_card.get("hook_style", "")}
+- surprise_move: {angle_card.get("surprise_move", "")}
+- supporting_move: {angle_card.get("supporting_move", "")}
+- ending_style: {angle_card.get("ending_style", "")}
+- avoid: {_join_brief(angle_card.get("avoid", []))}
+- writer_brief: {angle_card.get("writer_brief", "")}
+
 ## 要求
 1. 不是翻译/搬运，是用花椒的第一人称视角改写
 2. 加入自己的立场判断（看好/看衰/矛盾点在哪）
 3. 如果有数据就用数据说话
 4. 每条推文必须配图建议（描述图片内容，方便后续使用原文配图或生成图）
-5. 可以学习别人的反应结构，但不要复用他们的原句或固定话术
-{f"5. 额外上下文：{extra_context}" if extra_context else ""}"""
+5. 开头像真人刚看到这条消息 不是像写总结
+6. 可以学习别人的反应结构，但不要复用他们的原句或固定话术
+{f"7. 额外上下文：{extra_context}" if extra_context else ""}"""
     else:
         user_prompt = f"""自由发挥，写一条 {content_type} 类型的AI/创业观点推文。
 
-要有取向、有数字、有态度，但不要像模板化暴论机器。
+## angle card
+- posture: {angle_card.get("posture", "")}
+- stance: {angle_card.get("stance", "")}
+- hook_style: {angle_card.get("hook_style", "")}
+- surprise_move: {angle_card.get("surprise_move", "")}
+- supporting_move: {angle_card.get("supporting_move", "")}
+- ending_style: {angle_card.get("ending_style", "")}
+- avoid: {_join_brief(angle_card.get("avoid", []))}
+- writer_brief: {angle_card.get("writer_brief", "")}
+
+要有取向、有数字、有态度，但不要像模板化暴论机器，也不要像行业周报。
 {f"额外上下文：{extra_context}" if extra_context else ""}"""
 
     for attempt in range(MAX_REWRITE_ATTEMPTS):
@@ -205,6 +389,30 @@ async def write_tweet(
             tweet_text = "\n".join(line.rstrip("。") for line in tweet_text.split("\n"))
             tweet_text = tweet_text.replace("，", " ")
             result["tweet"] = tweet_text
+
+            try:
+                audit = await _audit_draft(tweet_text, fact_spine, angle_card)
+            except Exception as exc:
+                logger.warning("Anti-template audit failed: %s", exc)
+                audit = {"verdict": "pass", "why_it_reads_ai": [], "surgical_fixes": [], "rewrite_focus": ""}
+
+            if audit.get("verdict") == "needs_rewrite":
+                user_prompt = f"""上一版推文太像模板/AI 总结腔，需要局部重写。
+
+问题：
+{chr(10).join(f"- {item}" for item in audit.get("why_it_reads_ai", []))}
+
+优先改：
+{audit.get("rewrite_focus", "")}
+
+具体改法：
+{chr(10).join(f"- {item}" for item in audit.get("surgical_fixes", []))}
+
+原推文：
+{tweet_text}
+
+要求：保留事实骨架和立场，不要整条推倒重来，只把最像模板的地方改掉。"""
+                continue
 
             # Run guardrails
             failures = run_all_guardrails(tweet_text)
